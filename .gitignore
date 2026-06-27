@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environment
+.venv/
+
+# Environment variables
+.env
+
+# Logs
+logs/
+*.log
+
+# Test cache
+.pytest_cache/
+
+# Type checker
+.mypy_cache/
+
+# Ruff cache
+.ruff_cache/
+
+# Coverage
+.coverage
+htmlcov/
+
+# VS Code
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Data exports (keep large/generated files out of Git)
+datasets/exports/

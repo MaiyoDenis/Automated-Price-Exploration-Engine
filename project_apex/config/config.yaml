@@ -1,0 +1,26 @@
+application:
+  name: Project APEX
+  version: 0.1.0
+  environment: development
+
+database:
+  type: sqlite
+  path: datasets/database.db
+
+logging:
+  level: INFO
+  file: logs/apex.log
+
+market:
+  symbol: R_25
+  timeframe: 5
+  contract: rise_fall
+
+risk:
+  risk_per_trade: 0.01
+  max_daily_loss: 0.05
+  max_consecutive_losses: 3
+
+api:
+  app_id: ""
+  token: ""
