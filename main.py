@@ -1,24 +1,18 @@
-from loguru import logger
+"""
+Project APEX
+Application Entry Point
+"""
 
-from project_apex.config.config import Config
-from project_apex.database.sqlite_manager import Database
-from project_apex.utils.logger import setup_logger
+from project_apex.core.application import Application
 
 
 def main() -> None:
-    setup_logger()
+    app = Application()
 
-    config = Config()
-
-    database = Database(config.get("database", "path"))
-
-    database.connect()
-
-    database.initialize()
-
-    logger.info("Database initialized successfully.")
-
-    database.close()
+    try:
+        app.initialize()
+    finally:
+        app.shutdown()
 
 
 if __name__ == "__main__":
