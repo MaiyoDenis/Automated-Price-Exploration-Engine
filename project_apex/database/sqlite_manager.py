@@ -9,7 +9,7 @@ import sqlite3
 from pathlib import Path
 
 
-class Database:
+class SQLiteManager:
     """SQLite database manager."""
 
     def __init__(self, db_path: str) -> None:
