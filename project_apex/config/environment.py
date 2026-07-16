@@ -52,6 +52,19 @@ class Environment:
         return value
 
     @property
+    def deriv_token(self) -> str:
+        """Return the active Deriv API token (demo token for now).
+
+        Returns the value of ``DERIV_DEMO_TOKEN`` from the ``.env`` file.
+        Task 10 will wire in the logic to switch between demo and real tokens
+        based on the configured trading mode.
+
+        Raises:
+            ValueError: If ``DERIV_DEMO_TOKEN`` is not set.
+        """
+        return self.demo_token
+
+    @property
     def environment(self) -> str:
         """Return the application environment."""
 

@@ -12,8 +12,13 @@ logging:
   file: logs/apex.log
 
 market:
-  symbol: R_25
-  timeframe: 5
+  symbols:
+    - R_25
+  timeframes:
+    - 60
+    - 300
+    - 900
+  stats_interval: 60
   contract: rise_fall
 
 risk:
@@ -23,4 +28,9 @@ risk:
 
 api:
   app_id: ""
-  token: ""
+  websocket_url: "wss://ws.binaryws.com/websockets/v3"
+  heartbeat_interval: 30
+  heartbeat_timeout: 10
+  reconnect_max_attempts: 10
+  reconnect_initial_delay: 1.0
+  reconnect_max_delay: 60.0

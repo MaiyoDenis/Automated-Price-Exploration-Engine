@@ -20,6 +20,7 @@ class SQLiteManager:
         """Connect to the SQLite database."""
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self.connection = sqlite3.connect(self.db_path)
+        self.connection.execute("PRAGMA journal_mode=WAL;")
 
     def close(self) -> None:
         """Close the database connection."""
@@ -33,6 +34,14 @@ class SQLiteManager:
 
         with self.connection:
             self.connection.execute(query, params)
+
+    def execute_many(self, query: str, params: list[tuple]) -> None:
+        """Execute INSERT/UPDATE/DELETE queries with multiple parameters."""
+        if self.connection is None:
+            raise RuntimeError("Database is not connected.")
+
+        with self.connection:
+            self.connection.executemany(query, params)
 
     def fetchall(self, query: str, params: tuple = ()) -> list:
         """Execute SELECT queries."""

@@ -7,11 +7,11 @@
 - [x] Logging system
 - [x] SQLite database
 
-## ⏳ Phase 2 - Market Data
-- [ ] Deriv WebSocket client
-- [ ] Candle downloader
-- [ ] Tick collector
-- [ ] Automatic reconnect
+## ✅ Phase 2 - Market Data
+- [x] Deriv WebSocket client
+- [x] Candle downloader
+- [x] Tick collector
+- [x] Automatic reconnect
 
 ## ⏳ Phase 3 - Research
 - [ ] Indicators
