@@ -5,6 +5,7 @@ __pycache__/
 
 # Virtual environment
 .venv/
+venv/
 
 # Environment variables
 .env
@@ -15,6 +16,7 @@ logs/
 
 # Test cache
 .pytest_cache/
+.hypothesis/
 
 # Type checker
 .mypy_cache/
@@ -35,3 +37,25 @@ Thumbs.db
 
 # Data exports (keep large/generated files out of Git)
 datasets/exports/
+
+# Package build artifacts
+*.egg-info/
+dist/
+build/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Kiro AI workspace
+.kiro/
+
+# Documentation (internal/planning docs, not README)
+AI_ENGINEERING_GUIDE.md
+PROJECT_SPECIFICATION.md
+SYSTEM_ARCHITECTURE.md
+design.md
+requirements.md
+task.md
+docs/
