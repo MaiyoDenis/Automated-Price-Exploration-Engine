@@ -1,6 +1,6 @@
 application:
   name: Project APEX
-  version: 0.1.0
+  version: 0.2.0
   environment: development
 
 database:
@@ -21,10 +21,28 @@ market:
   stats_interval: 60
   contract: rise_fall
 
+# Risk Engine configuration
 risk:
+  # Legacy keys (kept for backward compatibility)
   risk_per_trade: 0.01
   max_daily_loss: 0.05
   max_consecutive_losses: 3
+  # New RiskEngine keys
+  max_daily_loss_pct: 0.05       # Halt trading if daily PnL drops below -5%
+  max_drawdown_pct: 0.15         # Halt trading if drawdown exceeds 15%
+  max_open_positions: 3          # Maximum simultaneous open positions
+  symbol_cooldown_s: 60.0        # Minimum seconds between trades on same symbol
+  risk_per_trade_pct: 0.01       # Risk 1% of equity per trade
+  atr_stop_multiplier: 1.5       # Stop-loss = 1.5 x ATR
+  atr_tp_multiplier: 3.0         # Take-profit = 3.0 x ATR (1:2 R:R)
+  min_confidence: 0.3            # Minimum signal confidence to trade
+
+# Trading / Execution configuration
+trading:
+  paper_trading: true            # Set to false when live API token is provided
+  initial_capital: 10000.0       # Starting paper balance
+  slippage_pct: 0.0001           # Simulated slippage (0.01%)
+  spread_pct: 0.0002             # Simulated bid-ask spread (0.02%)
 
 api:
   app_id: ""

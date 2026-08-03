@@ -5,13 +5,17 @@ Candle Builder
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Dict, List, Tuple
+import asyncio
+from dataclasses import dataclass, field
+from typing import Callable, Awaitable, Dict, List, Tuple
 
 from loguru import logger
 
 from project_apex.models.tick import Tick
 from project_apex.models.candle import Candle
+
+
+CandleCallback = Callable[[Candle], Awaitable[None]]
 
 
 @dataclass
@@ -33,6 +37,11 @@ class CandleBuilder:
         self.timeframes = timeframes
         self.valid_timeframes = valid_timeframes
         self._accumulators: Dict[Tuple[str, int], CandleAccumulator] = {}
+        self._candle_callbacks: list[CandleCallback] = []
+
+    def register_candle_callback(self, callback: CandleCallback) -> None:
+        """Register an async callback invoked for each completed candle."""
+        self._candle_callbacks.append(callback)
 
     def process_tick(self, tick: Tick) -> list[Candle]:
         """Synchronously processes a tick and returns any completed candles."""
@@ -88,7 +97,19 @@ class CandleBuilder:
                     tick_count=1
                 )
 
+        if completed_candles and self._candle_callbacks:
+            asyncio.ensure_future(self._fire_callbacks(completed_candles))
+
         return completed_candles
+
+    async def _fire_callbacks(self, candles: list[Candle]) -> None:
+        """Dispatch completed candles to all registered async callbacks."""
+        for candle in candles:
+            for cb in self._candle_callbacks:
+                try:
+                    await cb(candle)
+                except Exception as exc:
+                    logger.error(f"[CandleBuilder] Callback error: {exc}", exc_info=True)
 
     def stop(self) -> None:
         """Discards in-progress accumulators and clears state."""
