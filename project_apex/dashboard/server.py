@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from typing import Any
 
 from aiohttp import web
@@ -27,14 +28,25 @@ class DashboardServer:
         self.host = host
         self.port = port
         self.app = web.Application()
+        self.static_dir = os.path.join(os.path.dirname(__file__), "static")
         self._setup_routes()
         self._runner: web.AppRunner | None = None
 
     def _setup_routes(self) -> None:
+        # API Routes
         self.app.router.add_get("/api/status", self.handle_status)
         self.app.router.add_get("/api/portfolio", self.handle_portfolio)
         self.app.router.add_get("/api/positions", self.handle_positions)
         self.app.router.add_get("/api/strategies", self.handle_strategies)
+        
+        # Static UI Routes
+        self.app.router.add_get("/", self.handle_index)
+        self.app.router.add_static("/static/", path=self.static_dir, name="static")
+
+    async def handle_index(self, request: web.Request) -> web.Response:
+        """Serves the main dashboard HTML."""
+        index_path = os.path.join(self.static_dir, "index.html")
+        return web.FileResponse(index_path)
 
     async def _cors_response(self, data: dict[str, Any]) -> web.Response:
         """Returns a JSON response with permissive CORS headers for local dev."""
