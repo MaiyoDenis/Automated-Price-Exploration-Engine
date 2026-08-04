@@ -11,12 +11,12 @@
 - [x] Deriv WebSocket client
 - [x] Candle downloader
 - [x] Tick collector
-- [x] Automatic reconnect
+- [x] Automatic reconnect  
 
-## ⏳ Phase 3 - Research
-- [ ] Indicators
-- [ ] Backtesting engine
-- [ ] Strategy engine
+## ✅ Phase 3 - Research
+- [x] Indicators
+- [x] Backtesting engine
+- [x] Strategy engine
 
 ## ⏳ Phase 4 - Paper Trading
 - [ ] Trade simulator
