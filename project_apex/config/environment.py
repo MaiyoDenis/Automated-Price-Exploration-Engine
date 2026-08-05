@@ -30,6 +30,28 @@ class Environment:
         return value
 
     @property
+    def demo_account_id(self) -> str:
+        """Return the Deriv Demo Account ID."""
+
+        value = os.getenv("DERIV_DEMO_ACCOUNT_ID")
+
+        if value is None:
+            raise ValueError("DERIV_DEMO_ACCOUNT_ID is not set.")
+
+        return value
+
+    @property
+    def real_account_id(self) -> str:
+        """Return the Deriv Real Account ID."""
+
+        value = os.getenv("DERIV_REAL_ACCOUNT_ID")
+
+        if value is None:
+            raise ValueError("DERIV_REAL_ACCOUNT_ID is not set.")
+
+        return value
+
+    @property
     def demo_token(self) -> str:
         """Return the Deriv demo API token."""
 
@@ -51,18 +73,7 @@ class Environment:
 
         return value
 
-    @property
-    def deriv_token(self) -> str:
-        """Return the active Deriv API token (demo token for now).
 
-        Returns the value of ``DERIV_DEMO_TOKEN`` from the ``.env`` file.
-        Task 10 will wire in the logic to switch between demo and real tokens
-        based on the configured trading mode.
-
-        Raises:
-            ValueError: If ``DERIV_DEMO_TOKEN`` is not set.
-        """
-        return self.demo_token
 
     @property
     def environment(self) -> str:

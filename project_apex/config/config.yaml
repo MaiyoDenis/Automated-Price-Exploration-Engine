@@ -14,6 +14,12 @@ logging:
 market:
   symbols:
     - R_25
+  universe:
+    - R_10
+    - R_25
+    - R_50
+    - R_75
+    - R_100
   timeframes:
     - 60
     - 300
@@ -36,6 +42,13 @@ risk:
   atr_stop_multiplier: 1.5       # Stop-loss = 1.5 x ATR
   atr_tp_multiplier: 3.0         # Take-profit = 3.0 x ATR (1:2 R:R)
   min_confidence: 0.3            # Minimum signal confidence to trade
+  kelly_fraction: 0.25           # Kelly sizing fraction
+  # Circuit Breaker keys
+  circuit_breaker_sl_streak: 3
+  circuit_breaker_loss_vel_pct: 0.02
+  circuit_breaker_velocity_window_s: 1800.0
+  circuit_breaker_max_trades_hr: 10
+  circuit_breaker_halt_duration_s: 3600.0
 
 # Trading / Execution configuration
 trading:
@@ -44,9 +57,22 @@ trading:
   slippage_pct: 0.0001           # Simulated slippage (0.01%)
   spread_pct: 0.0002             # Simulated bid-ask spread (0.02%)
 
+# Autonomous Intelligence Layer configuration
+intelligence:
+  selector_timeframe: 300        # Frame used for scoring (5m)
+  cooldown_s: 1800.0             # How long a symbol is cooled down on stop loss
+  top_n_symbols: 2               # Number of symbols to trade simultaneously
+  rescore_interval_s: 300.0      # Recheck rankings every 5m
+
+# Machine Learning Retraining configuration
+ml:
+  retrain_interval_h: 24.0       # Auto-retrain scheduled every 24h
+  drift_check_interval_m: 60.0   # Look for regime drift every hour
+
 api:
   app_id: ""
   websocket_url: "wss://ws.binaryws.com/websockets/v3"
+  rest_url: "https://api.derivws.com"
   heartbeat_interval: 30
   heartbeat_timeout: 10
   reconnect_max_attempts: 10

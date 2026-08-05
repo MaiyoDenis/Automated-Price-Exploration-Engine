@@ -18,9 +18,9 @@
 - [x] Backtesting engine
 - [x] Strategy engine
 
-## ⏳ Phase 4 - Paper Trading
-- [ ] Trade simulator
-- [ ] Risk manager
+## ✅ Phase 4 - Paper Trading
+- [x] Trade simulator
+- [x] Risk manager
 
 ## ⏳ Phase 5 - Live Trading
 - [ ] Live execution

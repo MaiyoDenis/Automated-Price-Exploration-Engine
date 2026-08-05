@@ -48,6 +48,9 @@ class Portfolio:
         self._latest_atr: dict[str, float] = {}
         # Per-symbol latest price (set externally from tick pipeline)
         self._latest_price: dict[str, float] = {}
+        # Per-strategy win tracking for Kelly sizing
+        self._strategy_wins: dict[str, int] = defaultdict(int)
+        self._strategy_trades: dict[str, int] = defaultdict(int)
 
         logger.info(f"[Portfolio] Initialized with capital=${initial_capital:,.2f}")
 
@@ -84,6 +87,12 @@ class Portfolio:
 
         self._daily_realized_pnl += trade.realized_pnl
 
+        # Update per-strategy win tracking
+        strat = trade.strategy_name or "unknown"
+        self._strategy_trades[strat] += 1
+        if trade.realized_pnl > 0:
+            self._strategy_wins[strat] += 1
+
         # Update peak equity for drawdown
         current_eq = self.equity
         if current_eq > self._peak_equity:
@@ -107,12 +116,12 @@ class Portfolio:
 
     @property
     def equity(self) -> float:
-        """Total portfolio equity = cash + unrealized P&L from open positions."""
-        unrealized = sum(
-            pos.unrealized_pnl(self._latest_price.get(pos.symbol, pos.entry_price))
+        """Total portfolio equity = cash + market value of all open positions."""
+        position_value = sum(
+            pos.entry_price * pos.size + pos.unrealized_pnl(self._latest_price.get(pos.symbol, pos.entry_price))
             for pos in self._open_positions.values()
         )
-        return self._cash + unrealized
+        return self._cash + position_value
 
     @property
     def open_position_count(self) -> int:
@@ -132,6 +141,19 @@ class Portfolio:
 
     def get_atr(self, symbol: str) -> float | None:
         return self._latest_atr.get(symbol)
+
+    @property
+    def open_symbols(self) -> list[str]:
+        """List of symbols with currently open positions (for correlation filtering)."""
+        return [pos.symbol for pos in self._open_positions.values()]
+
+    def get_strategy_win_rate(self, strategy_name: str) -> float | None:
+        """Win rate [0,1] for a strategy from live trade history. None if < 10 trades."""
+        total = self._strategy_trades.get(strategy_name, 0)
+        if total < 10:
+            return None
+        wins = self._strategy_wins.get(strategy_name, 0)
+        return wins / total
 
     # ── Summary & reporting ───────────────────────────────────────────────────
 
@@ -168,6 +190,8 @@ class Portfolio:
             "open_position_count": lambda: self.open_position_count,
             "equity": lambda: self.equity,
             "atr": self.get_atr,
+            "open_symbols": lambda: self.open_symbols,
+            "strategy_win_rate": self.get_strategy_win_rate,
         }
 
     @staticmethod

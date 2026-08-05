@@ -16,3 +16,5 @@ Week 1 - Foundation
 - Backtest strategies
 - Analyze performance
 - Automate only validated strategies
+ http://127.0.0.1:8080
+ PYTHONPATH=. .venv/bin/python main.py

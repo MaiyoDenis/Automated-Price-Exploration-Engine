@@ -155,7 +155,7 @@ class MessageParser:
                 ))
             return candles
 
-        if msg_type == "pong":
+        if msg_type in ("pong", "ping"):
             return None
 
         # Ignore authorize responses here since they don't produce a domain object

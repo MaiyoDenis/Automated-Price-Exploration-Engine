@@ -79,3 +79,30 @@ class SQLiteManager:
             )
             """
         )
+
+        self.execute(
+            """
+            CREATE TABLE IF NOT EXISTS circuit_breaker_state (
+                id INTEGER PRIMARY KEY DEFAULT 1,
+                is_halted INTEGER NOT NULL,
+                halt_until REAL NOT NULL,
+                active_trigger TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                last_updated REAL NOT NULL,
+                CONSTRAINT single_row CHECK (id = 1)
+            )
+            """
+        )
+
+        self.execute(
+            """
+            CREATE TABLE IF NOT EXISTS strategy_performance (
+                strategy_name TEXT PRIMARY KEY,
+                wins INTEGER NOT NULL,
+                total_trades INTEGER NOT NULL,
+                expectancy REAL NOT NULL,
+                win_rate REAL NOT NULL,
+                rolling_sharpe REAL NOT NULL
+            )
+            """
+        )
