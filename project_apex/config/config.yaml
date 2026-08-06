@@ -50,9 +50,21 @@ risk:
   circuit_breaker_max_trades_hr: 10
   circuit_breaker_halt_duration_s: 3600.0
 
+# Enhanced Differs Strategy Configuration
+differs:
+  base_confidence: 0.70          # Base confidence threshold (adaptive will adjust this)
+  adaptive_confidence: true      # Enable adaptive threshold based on performance
+  duration_ticks: 1              # Contract duration (1-10 ticks)
+  ema_alpha: 0.05                # EMA smoothing factor (lower = more smoothing)
+  fast_window: 50                # Short-term pattern window
+  medium_window: 200             # Medium-term pattern window  
+  slow_window: 500               # Long-term baseline window
+  max_confidence_adjustment: 0.15  # Max +/- adjustment to base threshold
+  win_rate_target: 0.55          # Target win rate for adaptive adjustment
+
 # Trading / Execution configuration
 trading:
-  paper_trading: true            # Set to false when live API token is provided
+  paper_trading: false           # Set to false when live API token is provided
   initial_capital: 10000.0       # Starting paper balance
   slippage_pct: 0.0001           # Simulated slippage (0.01%)
   spread_pct: 0.0002             # Simulated bid-ask spread (0.02%)
@@ -70,6 +82,7 @@ ml:
   drift_check_interval_m: 60.0   # Look for regime drift every hour
 
 api:
+  account_type: "demo"           # "demo" or "real" credentials to use
   app_id: ""
   websocket_url: "wss://ws.binaryws.com/websockets/v3"
   rest_url: "https://api.derivws.com"

@@ -51,6 +51,12 @@ class DashboardServer:
         self.app.router.add_get("/api/alerts", self.handle_alerts)
         self.app.router.add_get("/api/health", self.handle_health)
         self.app.router.add_get("/api/trades", self.handle_trades)
+        
+        self.app.router.add_post("/api/settings/mode", self.handle_set_mode)
+        self.app.router.add_post("/api/settings/account", self.handle_set_account)
+        self.app.router.add_get("/api/account-balance", self.handle_account_balance)
+        self.app.router.add_get("/api/settings/trading-params", self.handle_get_trading_params)
+        self.app.router.add_post("/api/settings/trading-params", self.handle_set_trading_params)
 
         self.app.router.add_get("/", self.handle_index)
         if os.path.isdir(self.static_dir):
@@ -86,7 +92,8 @@ class DashboardServer:
         return await self._json({
             "status": "online",
             "broker_connected": is_connected,
-            "mode": "paper" if self.app_core.paper_trading else "live",
+            "account_type": self.app_core.config.get("api", "account_type") or "demo",
+            "trading_mode": getattr(self.app_core, "trading_mode", "standard"),
             "active_symbols": active_symbols,
             "circuit_breaker_halted": cb_halted,
             "circuit_breaker_reason": cb_reason,
@@ -214,6 +221,132 @@ class DashboardServer:
             "count": len(portfolio._closed_trades),
         })
 
+    async def handle_set_mode(self, request: web.Request) -> web.Response:
+        try:
+            data = await request.json()
+            mode = data.get("mode")
+            if mode not in ("standard", "scalping", "differs"):
+                return await self._json({"error": "Invalid mode. Must be 'standard', 'scalping', or 'differs'."})
+            
+            if hasattr(self.app_core, "set_trading_mode"):
+                self.app_core.set_trading_mode(mode)
+                return await self._json({"status": "success", "mode": mode})
+            else:
+                return await self._json({"error": "Core application does not support mode switching."})
+        except json.JSONDecodeError:
+            return await self._json({"error": "Invalid JSON"})
+
+    async def handle_set_account(self, request: web.Request) -> web.Response:
+        """Switch the active trading account between demo and real."""
+        try:
+            data = await request.json()
+            account_type = data.get("type")
+            if account_type not in ("demo", "real"):
+                return await self._json({"error": "Invalid type. Must be 'demo' or 'real'."})
+
+            if not hasattr(self.app_core, "switch_account"):
+                return await self._json({"error": "Account switching not supported."})
+
+            result = await self.app_core.switch_account(account_type)
+            return await self._json(result)
+        except json.JSONDecodeError:
+            return await self._json({"error": "Invalid JSON"})
+        except Exception as e:
+            logger.error(f"[DashboardServer] Account switch error: {e}")
+            return await self._json({"error": str(e)})
+
+    async def handle_account_balance(self, request: web.Request) -> web.Response:
+        account_type = request.rel_url.query.get("type", "demo")
+        if self.app_core.deriv_client is None:
+            return await self._json({"error": "Deriv client not initialized"})
+        result = await self.app_core.deriv_client.get_account_balance(account_type)
+        return await self._json(result)
+
+    async def handle_get_trading_params(self, request: web.Request) -> web.Response:
+        """Return current trading parameters for all modes."""
+        params = {"differs": {}, "scalping": {}, "standard": {}}
+
+        dre = getattr(self.app_core, "differs_risk_engine", None)
+        if dre:
+            params["differs"] = {
+                "base_stake": dre.base_stake,
+                "max_stake": dre.max_stake,
+                "martingale_enabled": dre.martingale_enabled,
+                "martingale_multiplier": dre.martingale_multiplier,
+                "martingale_max_steps": dre.martingale_max_steps,
+                "max_daily_loss_pct": dre.max_daily_loss_pct,
+                "loss_cooldown_ticks": dre.loss_cooldown_ticks,
+            }
+
+        sre = getattr(self.app_core, "scalping_risk_engine", None)
+        if sre:
+            params["scalping"] = {
+                "risk_per_trade_pct": sre.risk_per_trade_pct,
+                "atr_stop_multiplier": sre.atr_stop_multiplier,
+                "atr_tp_multiplier": sre.atr_tp_multiplier,
+                "max_open_positions": sre.max_open_positions,
+                "max_daily_loss_pct": sre.max_daily_loss_pct,
+            }
+
+        stdre = getattr(self.app_core, "standard_risk_engine", None)
+        if stdre:
+            params["standard"] = {
+                "risk_per_trade_pct": stdre.risk_per_trade_pct,
+                "atr_stop_multiplier": stdre.atr_stop_multiplier,
+                "atr_tp_multiplier": stdre.atr_tp_multiplier,
+                "max_open_positions": stdre.max_open_positions,
+                "max_daily_loss_pct": stdre.max_daily_loss_pct,
+                "min_confidence": stdre.min_confidence,
+            }
+
+        return await self._json(params)
+
+    async def handle_set_trading_params(self, request: web.Request) -> web.Response:
+        """Update trading parameters for a specific mode in real-time."""
+        try:
+            data = await request.json()
+            mode = data.get("mode")
+            params = data.get("params", {})
+
+            if mode not in ("differs", "scalping", "standard"):
+                return await self._json({"error": "Invalid mode"})
+
+            if mode == "differs":
+                engine = getattr(self.app_core, "differs_risk_engine", None)
+                if not engine:
+                    return await self._json({"error": "Differs risk engine not initialized"})
+                _DIFFERS_FIELDS = {
+                    "base_stake": float, "max_stake": float,
+                    "martingale_enabled": bool, "martingale_multiplier": float,
+                    "martingale_max_steps": int,
+                    "max_daily_loss_pct": float, "loss_cooldown_ticks": int,
+                }
+                for key, cast in _DIFFERS_FIELDS.items():
+                    if key in params:
+                        setattr(engine, key, cast(params[key]))
+
+            elif mode in ("scalping", "standard"):
+                attr = "scalping_risk_engine" if mode == "scalping" else "standard_risk_engine"
+                engine = getattr(self.app_core, attr, None)
+                if not engine:
+                    return await self._json({"error": f"{mode} risk engine not initialized"})
+                _STD_FIELDS = {
+                    "risk_per_trade_pct": float, "atr_stop_multiplier": float,
+                    "atr_tp_multiplier": float, "max_open_positions": int,
+                    "max_daily_loss_pct": float, "min_confidence": float,
+                }
+                for key, cast in _STD_FIELDS.items():
+                    if key in params:
+                        setattr(engine, key, cast(params[key]))
+
+            logger.info(f"[DashboardServer] Trading params updated for {mode}: {params}")
+            return await self._json({"status": "success", "mode": mode})
+        except json.JSONDecodeError:
+            return await self._json({"error": "Invalid JSON"})
+        except Exception as e:
+            logger.error(f"[DashboardServer] Settings update error: {e}")
+            return await self._json({"error": str(e)})
+
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     async def start(self) -> None:
@@ -233,7 +366,7 @@ class DashboardServer:
     async def _json(self, data: dict[str, Any]) -> web.Response:
         headers = {
             "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
             "Access-Control-Allow-Headers": "Content-Type",
             "Cache-Control": "no-store",
         }

@@ -3,135 +3,454 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Project APEX | AI Trading Dashboard</title>
+    <title>Project APEX | AI Trading Terminal</title>
+    <meta name="description" content="Project APEX — Professional AI-Powered Automated Trading Terminal">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
     <div class="app-container">
-        <!-- Sidebar -->
+
+        <!-- ═══ SIDEBAR ═══ -->
         <aside class="sidebar glass-panel">
             <div class="logo-container">
                 <div class="logo-icon">▲</div>
-                <h1>APEX</h1>
+                <div>
+                    <h1>APEX</h1>
+                    <span class="logo-sub">AI Trading Terminal</span>
+                </div>
             </div>
-            
+
             <nav class="main-nav">
-                <a href="#" class="nav-item active">
-                    <span class="nav-icon">📊</span>
-                    Dashboard
-                </a>
-                <a href="#" class="nav-item">
-                    <span class="nav-icon">🧠</span>
-                    AI Engine
-                </a>
-                <a href="#" class="nav-item">
-                    <span class="nav-icon">📈</span>
-                    Positions
-                </a>
-                <a href="#" class="nav-item">
-                    <span class="nav-icon">⚙️</span>
-                    Settings
-                </a>
+                <div class="nav-item active" onclick="navigateTo('dashboard')" id="nav-dashboard">
+                    <span class="nav-icon">📊</span> Dashboard
+                </div>
+                <div class="nav-item" onclick="navigateTo('ai')" id="nav-ai">
+                    <span class="nav-icon">🧠</span> AI Engine
+                </div>
+                <div class="nav-item" onclick="navigateTo('positions')" id="nav-positions">
+                    <span class="nav-icon">📈</span> Positions
+                </div>
+                <div class="nav-item" onclick="navigateTo('history')" id="nav-history">
+                    <span class="nav-icon">🗂️</span> Trade History
+                </div>
             </nav>
-            
-            <div class="system-status">
+
+            <div class="sidebar-footer">
                 <div class="status-indicator">
                     <div class="pulse-dot online"></div>
                     <span id="connection-status">System Online</span>
                 </div>
-                <div class="mode-badge paper-mode">PAPER TRADING</div>
+                <div class="mode-badge" id="trading-mode-badge">—</div>
             </div>
         </aside>
 
-        <!-- Main Content -->
+        <!-- ═══ MAIN CONTENT ═══ -->
         <main class="main-content">
+
+            <!-- Top header row -->
             <header class="top-header">
-                <h2>Overview</h2>
-                <div class="time-display" id="current-time">00:00:00 UTC</div>
+                <div>
+                    <h2 id="page-title">Dashboard</h2>
+                    <div class="active-strategy-tag" id="active-strategy-tag">
+                        <span class="ast-dot"></span>
+                        Standard Mode Active
+                    </div>
+                </div>
+                <div class="header-right">
+                    <div class="active-symbols-bar">
+                        <span class="asb-label">Watching:</span>
+                        <span id="active-symbols-list">—</span>
+                    </div>
+                    <div class="time-display" id="current-time">00:00:00 UTC</div>
+                </div>
             </header>
 
-            <!-- Metrics Grid -->
-            <section class="metrics-grid">
-                <div class="metric-card glass-panel">
-                    <div class="metric-title">Total Equity</div>
-                    <div class="metric-value" id="equity-value">$10,000.00</div>
-                    <div class="metric-change positive" id="equity-change">+0.00%</div>
-                </div>
+            <!-- ═══ PAGE: DASHBOARD ═══ -->
+            <div id="page-dashboard" class="page active">
                 
-                <div class="metric-card glass-panel">
-                    <div class="metric-title">Daily P&L</div>
-                    <div class="metric-value" id="daily-pnl">$0.00</div>
-                    <div class="metric-change neutral" id="daily-pnl-pct">0.00%</div>
-                </div>
-                
-                <div class="metric-card glass-panel">
-                    <div class="metric-title">Max Drawdown</div>
-                    <div class="metric-value warning" id="drawdown-value">0.00%</div>
-                    <div class="metric-subtitle">Peak: <span id="peak-equity">$10,000.00</span></div>
-                </div>
-                
-                <div class="metric-card glass-panel">
-                    <div class="metric-title">Win Rate</div>
-                    <div class="metric-value highlight" id="win-rate">0.0%</div>
-                    <div class="metric-subtitle">Total Trades: <span id="total-trades">0</span></div>
-                </div>
-            </section>
-
-            <!-- Middle Section: Chart & Regime -->
-            <section class="middle-section">
-                <!-- AI Engine Status (Regime & ML Prediction) -->
-                <div class="ai-status-panel glass-panel">
-                    <h3 class="panel-header">AI Brain Status</h3>
-                    
-                    <div class="regime-display">
-                        <h4>Market Regime</h4>
-                        <div class="regime-badge" id="regime-badge">DETECTING...</div>
-                    </div>
-                    
-                    <div class="prediction-display">
-                        <h4>XGBoost Prediction (R_25)</h4>
-                        <div class="prob-bar-container">
-                            <div class="prob-label">UP</div>
-                            <div class="prob-bar">
-                                <div class="prob-fill" id="prob-up-fill" style="width: 50%"></div>
-                            </div>
-                            <div class="prob-value" id="prob-value">50%</div>
+                <!-- Command Center Panel -->
+                <section class="command-center-panel glass-panel">
+                    <!-- Account Block -->
+                    <div class="cc-block">
+                        <div class="cc-block-label">ACCOUNT</div>
+                        <div class="account-toggle">
+                            <button id="btn-demo" class="acct-btn active" onclick="selectAccount('demo')">DEMO</button>
+                            <button id="btn-real" class="acct-btn" onclick="selectAccount('real')">REAL</button>
                         </div>
-                        <p class="prob-subtext">Probability of next 5-min candle closing higher.</p>
+                        <div class="account-balance-display">
+                            <div class="abd-value" id="account-balance">$—</div>
+                            <div class="abd-sub" id="account-type-label">Demo Account</div>
+                        </div>
+                    </div>
+
+                    <div class="cc-divider"></div>
+
+                    <!-- Strategy Block -->
+                    <div class="cc-block cc-block-wide">
+                        <div class="cc-block-label">STRATEGY</div>
+                        <div class="strategy-cards">
+                            <div class="strategy-card active" id="sc-standard" onclick="selectStrategy('standard')">
+                                <div class="sc-icon">🤖</div>
+                                <div class="sc-info">
+                                    <div class="sc-name">Standard</div>
+                                    <div class="sc-desc">Ensemble + ML</div>
+                                </div>
+                                <div class="sc-check" id="check-standard">✓</div>
+                            </div>
+                            <div class="strategy-card" id="sc-scalping" onclick="selectStrategy('scalping')">
+                                <div class="sc-icon">⚡</div>
+                                <div class="sc-info">
+                                    <div class="sc-name">Scalping</div>
+                                    <div class="sc-desc">VWAP + EMA</div>
+                                </div>
+                                <div class="sc-check" id="check-scalping">✓</div>
+                            </div>
+                            <div class="strategy-card" id="sc-differs" onclick="selectStrategy('differs')">
+                                <div class="sc-icon">🎯</div>
+                                <div class="sc-info">
+                                    <div class="sc-name">Differs</div>
+                                    <div class="sc-desc">Digit Predictor</div>
+                                </div>
+                                <div class="sc-check" id="check-differs">✓</div>
+                            </div>
+                        </div>
+
+                        <!-- ═══ Strategy Config Drawer ═══ -->
+                        <div class="strategy-config-drawer" id="config-drawer">
+                            
+                            <!-- Standard Config -->
+                            <div class="config-panel" id="config-panel-standard">
+                                <div class="config-panel-header">
+                                    <div class="config-panel-title"><span class="config-dot standard-dot"></span> Standard Settings</div>
+                                    <button class="config-save-btn" onclick="saveSettings('standard')">Apply Changes</button>
+                                </div>
+                                <div class="config-grid">
+                                    <div class="form-group">
+                                        <label class="form-label">Risk per Trade (%)</label>
+                                        <input type="number" class="form-input" id="std_risk_per_trade_pct" step="0.001" min="0">
+                                        <div class="form-hint">Fraction of equity (e.g. 0.01 = 1%)</div>
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="form-label">Stop Loss (ATR×)</label>
+                                        <input type="number" class="form-input" id="std_atr_stop_multiplier" step="0.1" min="0">
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="form-label">Take Profit (ATR×)</label>
+                                        <input type="number" class="form-input" id="std_atr_tp_multiplier" step="0.1" min="0">
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="form-label">Min Confidence</label>
+                                        <input type="number" class="form-input" id="std_min_confidence" step="0.05" min="0" max="1">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Scalping Config -->
+                            <div class="config-panel" id="config-panel-scalping">
+                                <div class="config-panel-header">
+                                    <div class="config-panel-title"><span class="config-dot scalping-dot"></span> Scalping Settings</div>
+                                    <button class="config-save-btn" onclick="saveSettings('scalping')">Apply Changes</button>
+                                </div>
+                                <div class="config-grid">
+                                    <div class="form-group">
+                                        <label class="form-label">Risk per Trade (%)</label>
+                                        <input type="number" class="form-input" id="scl_risk_per_trade_pct" step="0.001" min="0">
+                                        <div class="form-hint">Fraction of equity (e.g. 0.01 = 1%)</div>
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="form-label">Stop Loss (ATR×)</label>
+                                        <input type="number" class="form-input" id="scl_atr_stop_multiplier" step="0.1" min="0">
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="form-label">Take Profit (ATR×)</label>
+                                        <input type="number" class="form-input" id="scl_atr_tp_multiplier" step="0.1" min="0">
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="form-label">Max Positions</label>
+                                        <input type="number" class="form-input" id="scl_max_open_positions" step="1" min="1">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Differs Config -->
+                            <div class="config-panel" id="config-panel-differs">
+                                <div class="config-panel-header">
+                                    <div class="config-panel-title"><span class="config-dot differs-dot"></span> Differs Settings</div>
+                                    <button class="config-save-btn" onclick="saveSettings('differs')">Apply Changes</button>
+                                </div>
+                                <div class="config-grid">
+                                    <div class="form-group">
+                                        <label class="form-label">Base Stake ($)</label>
+                                        <input type="number" class="form-input" id="dif_base_stake" step="0.1" min="0.35">
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="form-label">Max Stake ($)</label>
+                                        <input type="number" class="form-input" id="dif_max_stake" step="1" min="1">
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="form-label">Loss Cooldown (Ticks)</label>
+                                        <input type="number" class="form-input" id="dif_loss_cooldown_ticks" step="1" min="0">
+                                    </div>
+                                    <div class="form-group" style="grid-column: span 2;">
+                                        <label class="form-label">Martingale Strategy</label>
+                                        <div style="display: flex; gap: 12px; align-items: center; margin-top: 4px;">
+                                            <div class="toggle-container">
+                                                <div class="toggle-switch" id="dif_martingale_enabled" onclick="toggleSwitch(this)"></div>
+                                                <span class="toggle-label" id="dif_martingale_label">OFF</span>
+                                            </div>
+                                            <input type="number" class="form-input" id="dif_martingale_multiplier" step="0.1" min="1" style="width: 80px;" placeholder="2.0x">
+                                            <span style="font-size:12px; color:var(--text-secondary)">max steps:</span>
+                                            <input type="number" class="form-input" id="dif_martingale_max_steps" step="1" min="1" style="width: 80px;" placeholder="4">
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                        </div>
+                    </div>
+
+                    <div class="cc-divider"></div>
+
+                    <!-- Scan & Trade Block -->
+                    <div class="cc-block cc-block-action">
+                        <div class="cc-block-label">ACTION</div>
+                        <button class="scan-trade-btn" id="scan-trade-btn" onclick="scanAndTrade()">
+                            <span class="btn-icon">🔍</span>
+                            <span id="scan-btn-text">SCAN &amp; TRADE</span>
+                        </button>
+                        <div class="action-status" id="action-status">Ready to trade</div>
+                    </div>
+                </section>
+
+                <!-- Metrics Grid -->
+                <section class="metrics-grid">
+                    <div class="metric-card glass-panel">
+                        <div class="metric-title">Session P&amp;L</div>
+                        <div class="metric-value highlight" id="equity-value">$0.00</div>
+                        <div class="metric-change neutral" id="equity-change">+0.00%</div>
+                    </div>
+                    <div class="metric-card glass-panel">
+                        <div class="metric-title">Daily P&amp;L</div>
+                        <div class="metric-value" id="daily-pnl">$0.00</div>
+                        <div class="metric-change neutral" id="daily-pnl-pct">0.00%</div>
+                    </div>
+                    <div class="metric-card glass-panel">
+                        <div class="metric-title">Max Drawdown</div>
+                        <div class="metric-value warning" id="drawdown-value">0.00%</div>
+                        <div class="metric-subtitle">Peak: <span id="peak-equity">—</span></div>
+                    </div>
+                    <div class="metric-card glass-panel">
+                        <div class="metric-title">Win Rate</div>
+                        <div class="metric-value highlight" id="win-rate">0.0%</div>
+                        <div class="metric-subtitle">Total Trades: <span id="total-trades">0</span></div>
+                    </div>
+                </section>
+
+                <!-- Dashboard bottom grid -->
+                <section class="middle-section">
+                    <!-- Dashboard AI Brief -->
+                    <div class="ai-status-panel glass-panel">
+                        <h3 class="panel-header">🧠 AI Engine Overview</h3>
+                        <div class="regime-display">
+                            <h4>Market Regime</h4>
+                            <div class="regime-badge" id="dash-regime-badge">DETECTING...</div>
+                        </div>
+                        <div class="engine-status-section">
+                            <h4>Active Engine</h4>
+                            <div class="engine-pill" id="engine-pill">
+                                <span id="engine-pill-icon">🤖</span>
+                                <span id="engine-pill-name">Standard — Ensemble + ML</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Dashboard Positions -->
+                    <div class="positions-panel glass-panel">
+                        <h3 class="panel-header">📈 Active Positions</h3>
+                        <div class="table-container">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>Symbol</th>
+                                        <th>Direction</th>
+                                        <th>Size</th>
+                                        <th>Entry Price</th>
+                                        <th>Current</th>
+                                        <th>Unrealized P&amp;L</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="dash-positions-body">
+                                    <tr>
+                                        <td colspan="6" class="empty-state">No open positions</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
+            </div>
+
+            <!-- ═══ PAGE: AI ENGINE ═══ -->
+            <div id="page-ai" class="page">
+                <div class="ai-page-grid">
+                    <div class="ai-detail-panel glass-panel">
+                        <h3 class="panel-header">Machine Learning Model</h3>
+                        
+                        <div class="prediction-display">
+                            <h4>XGBoost Prediction (R_25)</h4>
+                            <div class="prob-bar-container">
+                                <div class="prob-label">UP</div>
+                                <div class="prob-bar">
+                                    <div class="prob-fill" id="prob-up-fill" style="width: 50%"></div>
+                                </div>
+                                <div class="prob-value" id="prob-value">50%</div>
+                            </div>
+                            <p class="prob-subtext">Probability of next 5-min candle closing higher.</p>
+                        </div>
+                        
+                        <div style="margin-top:20px;">
+                            <h4>Model Status</h4>
+                            <div class="ai-stat-row">
+                                <span class="ai-stat-label">Training Status</span>
+                                <span class="ai-stat-value" style="color:var(--success)">Trained & Active</span>
+                            </div>
+                            <div class="ai-stat-row">
+                                <span class="ai-stat-label">Last Retrain</span>
+                                <span class="ai-stat-value">12 mins ago</span>
+                            </div>
+                            <div class="ai-stat-row">
+                                <span class="ai-stat-label">Retrain Interval</span>
+                                <span class="ai-stat-value">24.0 Hours</span>
+                            </div>
+                            <div class="ai-stat-row">
+                                <span class="ai-stat-label">Lookback Window</span>
+                                <span class="ai-stat-value">30 Days</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="ai-detail-panel glass-panel">
+                        <h3 class="panel-header">Market Regime Analysis</h3>
+                        <div class="regime-display">
+                            <div class="regime-badge" id="ai-regime-badge">DETECTING...</div>
+                        </div>
+                        
+                        <div style="margin-top:20px;">
+                            <h4>Ensemble Weights</h4>
+                            <div class="ai-stat-row">
+                                <span class="ai-stat-label">ML Model</span>
+                                <span class="ai-stat-value">45%</span>
+                            </div>
+                            <div class="ai-stat-row">
+                                <span class="ai-stat-label">Trend (SMA)</span>
+                                <span class="ai-stat-value">25%</span>
+                            </div>
+                            <div class="ai-stat-row">
+                                <span class="ai-stat-label">Momentum (MACD)</span>
+                                <span class="ai-stat-value">15%</span>
+                            </div>
+                            <div class="ai-stat-row">
+                                <span class="ai-stat-label">Mean Rev (RSI)</span>
+                                <span class="ai-stat-value">15%</span>
+                            </div>
+                        </div>
                     </div>
                 </div>
+            </div>
 
-                <!-- Open Positions -->
-                <div class="positions-panel glass-panel">
-                    <h3 class="panel-header">Active Positions</h3>
+            <!-- ═══ PAGE: POSITIONS ═══ -->
+            <div id="page-positions" class="page">
+                <div class="positions-full-panel glass-panel">
+                    <h3 class="panel-header">All Active Positions</h3>
                     <div class="table-container">
-                        <table class="positions-table">
+                        <table class="data-table">
                             <thead>
                                 <tr>
+                                    <th>ID</th>
                                     <th>Symbol</th>
+                                    <th>Strategy</th>
                                     <th>Direction</th>
                                     <th>Size</th>
                                     <th>Entry Price</th>
                                     <th>Current</th>
-                                    <th>Unrealized P&L</th>
+                                    <th>Stop Loss</th>
+                                    <th>Take Profit</th>
+                                    <th>Unrealized P&amp;L</th>
                                 </tr>
                             </thead>
-                            <tbody id="positions-body">
+                            <tbody id="full-positions-body">
                                 <tr>
-                                    <td colspan="6" class="empty-state">No open positions</td>
+                                    <td colspan="10" class="empty-state">No open positions</td>
                                 </tr>
                             </tbody>
                         </table>
                     </div>
                 </div>
-            </section>
+            </div>
+
+            <!-- ═══ PAGE: TRADE HISTORY ═══ -->
+            <div id="page-history" class="page">
+                <div class="history-summary-grid">
+                    <div class="summary-stat">
+                        <div class="summary-stat-label">Total Trades</div>
+                        <div class="summary-stat-value" id="hist-total-trades">0</div>
+                    </div>
+                    <div class="summary-stat">
+                        <div class="summary-stat-label">Net P&L</div>
+                        <div class="summary-stat-value" id="hist-net-pnl">$0.00</div>
+                    </div>
+                    <div class="summary-stat">
+                        <div class="summary-stat-label">Win Rate</div>
+                        <div class="summary-stat-value" id="hist-win-rate">0.0%</div>
+                    </div>
+                    <div class="summary-stat">
+                        <div class="summary-stat-label">Best Trade</div>
+                        <div class="summary-stat-value" style="color:var(--success)" id="hist-best-trade">$0.00</div>
+                    </div>
+                    <div class="summary-stat">
+                        <div class="summary-stat-label">Worst Trade</div>
+                        <div class="summary-stat-value" style="color:var(--danger)" id="hist-worst-trade">$0.00</div>
+                    </div>
+                </div>
+
+                <div class="trade-history-panel glass-panel">
+                    <div class="panel-header" style="display:flex; justify-content:space-between; align-items:center;">
+                        <span>Closed Trades</span>
+                        <span style="font-size:12px; color:var(--text-secondary); font-weight:normal;">Showing last 100 trades</span>
+                    </div>
+                    <div class="table-container">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Time</th>
+                                    <th>Symbol</th>
+                                    <th>Strategy</th>
+                                    <th>Dir</th>
+                                    <th>Size</th>
+                                    <th>Entry</th>
+                                    <th>Exit</th>
+                                    <th>P&amp;L ($)</th>
+                                    <th>P&amp;L (%)</th>
+                                    <th>Result</th>
+                                    <th>Reason</th>
+                                </tr>
+                            </thead>
+                            <tbody id="history-body">
+                                <tr>
+                                    <td colspan="11" class="empty-state">No trade history available</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
         </main>
     </div>
 
-    <!-- Scripts -->
     <script src="/static/app.js"></script>
 </body>
 </html>
