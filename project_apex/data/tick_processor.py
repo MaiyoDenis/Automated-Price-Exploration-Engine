@@ -6,7 +6,7 @@ Tick Collector
 from __future__ import annotations
 
 import asyncio
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from loguru import logger
 
@@ -46,7 +46,8 @@ class TickCollector:
         candle_builder: CandleBuilder,
         symbols: list[str],
         stats_interval: int,
-        valid_timeframes: list[int]
+        valid_timeframes: list[int],
+        tick_callback: "Optional[Callable[[Tick], None]]" = None,
     ) -> None:
         self.provider = provider
         self.repository = repository
@@ -54,6 +55,7 @@ class TickCollector:
         self.symbols = symbols
         self.stats_interval = stats_interval
         self.valid_timeframes = valid_timeframes
+        self._tick_callback = tick_callback  # Called with tick on every accepted tick
         
         self._latest_timestamps: Dict[str, int] = {}
         self._active_subscriptions: List[str] = []
@@ -150,6 +152,10 @@ class TickCollector:
             self.repository.save_tick(tick)
             self._latest_timestamps[tick.symbol] = tick.timestamp
             self._ticks_accepted += 1
+            
+            # Notify freshness tracker and strategy on every real tick
+            if self._tick_callback:
+                self._tick_callback(tick)
             
             candles = self.candle_builder.process_tick(tick)
             if candles:

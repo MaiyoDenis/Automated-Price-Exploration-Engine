@@ -282,7 +282,7 @@ class RiskEngine:
             take_profit = signal.price - tp_distance
 
         # Size = risk_amount / stop_distance (stake-based sizing)
-        size = round(risk_amount / (stop_distance + 1e-9), 4)
+        size = round(risk_amount / (stop_distance + 1e-9), 2)
         size = max(size, 0.01)  # Minimum stake
 
         # Mark cooldown

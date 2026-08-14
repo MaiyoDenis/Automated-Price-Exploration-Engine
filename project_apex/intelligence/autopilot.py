@@ -43,6 +43,7 @@ class AutopilotEngine:
         candle_handler: Callable[[Candle], Awaitable[None]],
         top_n: int = 2,
         rescore_interval_s: float = 300.0,
+        initial_symbols: list[str] | None = None,
     ) -> None:
         self._selector = market_selector
         self._subscribe = subscribe_fn
@@ -50,14 +51,16 @@ class AutopilotEngine:
         self._candle_handler = candle_handler
         self._top_n = top_n
         self._rescore_interval = rescore_interval_s
-
-        self._active_symbols: set[str] = set()
+        # Seed with initial symbols so strategies receive candles immediately
+        # before the first market-scoring run completes.
+        self._active_symbols: set[str] = set(initial_symbols or [])
         self._rescore_task: Optional[asyncio.Task] = None
         self._running = False
 
         logger.info(
             f"[AutopilotEngine] Initialized | top_n={top_n} | "
-            f"rescore_interval={rescore_interval_s}s"
+            f"rescore_interval={rescore_interval_s}s | "
+            f"seed_symbols={sorted(self._active_symbols)}"
         )
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -116,14 +119,21 @@ class AutopilotEngine:
         scores = await self._selector.update_all()
         new_top = set(self._selector.get_top_symbols(self._top_n))
 
+        # If the scorer has no data yet (cold start), keep seeded symbols active.
+        # Don't drop them just because we can't score them yet.
+        if not new_top:
+            logger.info(
+                f"[AutopilotEngine] Scorer returned no results — "
+                f"keeping seeded symbols active: {sorted(self._active_symbols)}"
+            )
+            return
+
         # Unsubscribe symbols that dropped out of the top-N
         to_remove = self._active_symbols - new_top
         for symbol in to_remove:
             score_obj = next((s for s in scores if s.symbol == symbol), None)
-            logger.info(
-                f"[AutopilotEngine] ⬇ DROPPING {symbol} "
-                f"(score={score_obj.total_score:.1f if score_obj else '?'})"
-            )
+            score_str = f"{score_obj.total_score:.1f}" if score_obj is not None else "?"
+            logger.info(f"[AutopilotEngine] ⬇ DROPPING {symbol} (score={score_str})")
             try:
                 await self._unsubscribe(symbol)
             except Exception as exc:
@@ -134,11 +144,12 @@ class AutopilotEngine:
         to_add = new_top - self._active_symbols
         for symbol in to_add:
             score_obj = next((s for s in scores if s.symbol == symbol), None)
+            score_str = f"{score_obj.total_score:.1f}" if score_obj is not None else "?"
+            regime_str = score_obj.regime if score_obj is not None else "?"
+            adx_str = score_obj.adx if score_obj is not None else "?"
             logger.info(
                 f"[AutopilotEngine] ⬆ SELECTING {symbol} | "
-                f"score={score_obj.total_score:.1f if score_obj else '?'} | "
-                f"regime={score_obj.regime if score_obj else '?'} | "
-                f"ADX={score_obj.adx if score_obj else '?'}"
+                f"score={score_str} | regime={regime_str} | ADX={adx_str}"
             )
             try:
                 await self._subscribe(symbol)
