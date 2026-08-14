@@ -1,64 +1,78 @@
 """
-Project APEX — Live Broker Stub
+Project APEX — Live Broker
 
 Real order execution via the Deriv API.
-
-TODO(live-execution): This module is a stub. Real order submission requires
-the Deriv API token with trading permissions. Implement once the user provides
-the live API credentials.
-
-The interface mirrors PaperBroker so the application can swap brokers without
-changing the rest of the system.
 """
 from __future__ import annotations
 
+import time
 from loguru import logger
 
-from project_apex.risk.models import TradeOrder
+from project_apex.risk.models import TradeOrder, Direction
 from project_apex.execution.models import Position, Trade
-from project_apex.execution.paper_broker import PaperBroker, TradeHandler
+from project_apex.execution.paper_broker import PaperBroker
+from project_apex.api.deriv_client import DerivClient
+from project_apex.api.messages import MessageBuilder
 
 
 class LiveBroker(PaperBroker):
     """
     Live order execution broker (Deriv API).
-
-    Currently inherits PaperBroker behaviour and logs all orders as
-    "would-be live orders". Replace the methods below with real Deriv
-    API calls once credentials are available.
-
-    The Deriv trading API endpoints needed:
-      - buy: https://api.deriv.com/api-explorer/#buy
-      - sell: https://api.deriv.com/api-explorer/#sell
-      - proposal: https://api.deriv.com/api-explorer/#proposal
-
-    Security: API token MUST be loaded from environment / secrets manager.
-    NEVER hardcode the token. See project_apex/config/environment.py.
     """
 
-    def __init__(self, slippage_pct: float = 0.0, spread_pct: float = 0.0) -> None:
+    def __init__(
+        self,
+        client: DerivClient,
+        slippage_pct: float = 0.0,
+        spread_pct: float = 0.0
+    ) -> None:
         super().__init__(slippage_pct=slippage_pct, spread_pct=spread_pct)
-        logger.warning(
-            "[LiveBroker] Running in LIVE-STUB mode. "
-            "Real Deriv API calls are NOT implemented yet. "
-            "All trades are paper-simulated until API credentials are provided."
-        )
+        self.client = client
+        self.builder = MessageBuilder()
+        logger.info("[LiveBroker] Initialized in LIVE mode connected to DerivClient.")
 
     async def open_position(self, order: TradeOrder, current_time_ms: int | None = None) -> Position:
-        """
-        TODO(live-execution): Replace with real Deriv API buy call.
+        """Execute a live buy order."""
+        contract_type = "CALL" if order.direction == Direction.LONG else "PUT"
+        
+        # 1. Proposal
+        try:
+            prop_req = self.builder.proposal(order.symbol, order.size, contract_type)
+            prop_resp = await self.client.send_request(prop_req)
+            proposal_id = prop_resp["proposal"]["id"]
+        except Exception as e:
+            logger.error(f"[LiveBroker] Proposal failed: {e}")
+            raise
+            
+        # 2. Buy
+        try:
+            buy_req = self.builder.buy(proposal_id, order.size)
+            buy_resp = await self.client.send_request(buy_req)
+            
+            contract_id = str(buy_resp["buy"]["contract_id"])
+            buy_price = float(buy_resp["buy"]["buy_price"])
+        except Exception as e:
+            logger.error(f"[LiveBroker] Buy failed: {e}")
+            raise
 
-        Real implementation steps:
-          1. Send `proposal` request to Deriv WS to get a price quote.
-          2. Send `buy` request with the proposal id and stake.
-          3. Parse the `buy` response to get the contract ID.
-          4. Map contract ID to a Position object.
-        """
-        logger.warning(
-            f"[LiveBroker] LIVE ORDER (stub) — {order.direction.name} "
-            f"{order.symbol} size={order.size:.4f}"
+        logger.info(
+            f"[LiveBroker] LIVE OPENED {order.direction.name} {order.symbol} | "
+            f"contract_id={contract_id} price={buy_price}"
         )
-        return await super().open_position(order, current_time_ms)
+        
+        pos = Position(
+            id=contract_id,
+            symbol=order.symbol,
+            direction=order.direction,
+            size=order.size,
+            entry_price=buy_price,
+            stop_loss=order.stop_loss,
+            take_profit=order.take_profit,
+            strategy_name=order.strategy_name,
+            opened_at=current_time_ms or int(time.time() * 1000)
+        )
+        self.open_positions[pos.id] = pos
+        return pos
 
     async def close_position(
         self,
@@ -67,15 +81,46 @@ class LiveBroker(PaperBroker):
         reason: str = "manual",
         current_time_ms: int | None = None,
     ) -> Trade | None:
-        """
-        TODO(live-execution): Replace with real Deriv API sell call.
+        """Execute a live sell order."""
+        if position_id not in self.open_positions:
+            return None
+            
+        pos = self.open_positions[position_id]
+        
+        try:
+            sell_req = self.builder.sell(int(position_id))
+            sell_resp = await self.client.send_request(sell_req)
+            
+            sold_for = float(sell_resp["sell"]["sold_for"])
+        except Exception as e:
+            logger.error(f"[LiveBroker] Sell failed: {e}")
+            raise
+            
+        self.open_positions.pop(position_id)
+        
+        realized_pnl = sold_for - pos.entry_price
+        realized_pnl_pct = realized_pnl / pos.entry_price if pos.entry_price else 0.0
 
-        Real implementation steps:
-          1. Look up the Deriv contract ID for this position_id.
-          2. Send `sell` request with the contract ID.
-          3. Parse the `sell` response for the final P&L.
-        """
-        logger.warning(
-            f"[LiveBroker] LIVE CLOSE (stub) — position={position_id[:8]} reason={reason}"
+        trade = Trade(
+            id=pos.id,
+            symbol=pos.symbol,
+            direction=pos.direction,
+            size=pos.size,
+            entry_price=pos.entry_price,
+            exit_price=exit_price,
+            realized_pnl=realized_pnl,
+            realized_pnl_pct=realized_pnl_pct,
+            opened_at=pos.opened_at,
+            closed_at=current_time_ms or int(time.time() * 1000),
+            close_reason=reason,
+            strategy_name=pos.strategy_name,
         )
-        return await super().close_position(position_id, exit_price, reason, current_time_ms)
+        self.trade_history.append(trade)
+        
+        logger.info(
+            f"[LiveBroker] LIVE CLOSED {pos.direction.name} {pos.symbol} | "
+            f"contract_id={position_id} sold_for={sold_for} PnL={realized_pnl:.2f} reason={reason}"
+        )
+        
+        await self._fire_trade_callbacks(trade)
+        return trade
