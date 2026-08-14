@@ -33,30 +33,35 @@ class DiffersStrategy(LiveStrategy):
         
         # Performance tracking for adaptive learning
         self.recent_trades: Dict[str, list] = {}  # symbol -> [(digit, won, confidence), ...]
-        self.win_rate_window: int = 50  # Track last N trades for win rate
+        self.win_rate_window: int = 30  # Track last N trades for win rate (was 50)
+
+        # Digit lock — once a digit wins, keep trading it until it appears or loses
+        self._locked_digit: Dict[str, Optional[int]] = {}   # symbol -> locked digit or None
+        self._lock_reason: Dict[str, str] = {}              # symbol -> why it's locked
+        self._lock_grace_ticks: Dict[str, int] = {}         # symbol -> ticks remaining before confidence-drop unlock is allowed
         
     def initialize(self, config: Dict[str, Any]) -> None:
         """
         Initialize strategy with configuration.
         
         Config keys:
-            base_confidence: Minimum confidence threshold (default: 0.70)
+            base_confidence: Minimum confidence threshold (default: 0.60, was 0.70)
             adaptive_confidence: Whether to adjust threshold based on performance (default: True)
             duration_ticks: Contract duration in ticks (default: 1)
-            ema_alpha: EMA smoothing factor (default: 0.05)
-            fast_window: Short-term window size (default: 50)
-            medium_window: Medium-term window size (default: 200)
+            ema_alpha: EMA smoothing factor (default: 0.08, faster)
+            fast_window: Short-term window size (default: 30, was 50)
+            medium_window: Medium-term window size (default: 150, was 200)
             slow_window: Long-term window size (default: 500)
             max_confidence_adjustment: Max +/- adjustment to confidence (default: 0.15)
         """
-        self.base_confidence = config.get("base_confidence", 0.70)
+        self.base_confidence = config.get("base_confidence", 0.70)   # both normal and recovery require 0.70
         self.adaptive_confidence = config.get("adaptive_confidence", True)
         self.duration_ticks = config.get("duration_ticks", 1)
-        self.alpha = config.get("ema_alpha", 0.05)
-        self.fast_window = config.get("fast_window", 50)
-        self.medium_window = config.get("medium_window", 200)
+        self.alpha = config.get("ema_alpha", 0.08)                    # was 0.05
+        self.fast_window = config.get("fast_window", 30)              # was 50
+        self.medium_window = config.get("medium_window", 150)         # was 200
         self.slow_window = config.get("slow_window", 500)
-        self.max_conf_adjustment = config.get("max_confidence_adjustment", 0.15)
+        self.max_conf_adjustment = config.get("max_confidence_adjustment", 0.25) # increased from 0.15
         
         logger.info(
             f"[{self.name}] Initialized | "
@@ -75,42 +80,48 @@ class DiffersStrategy(LiveStrategy):
         """
         if not self.adaptive_confidence:
             return self.base_confidence
-        
-        if symbol not in self.recent_trades or len(self.recent_trades[symbol]) < 10:
+
+        # Need at least 8 trades to start adapting (was 10)
+        if symbol not in self.recent_trades or len(self.recent_trades[symbol]) < 8:
             return self.base_confidence
-        
+
         # Calculate recent win rate
         recent = self.recent_trades[symbol][-self.win_rate_window:]
         wins = sum(1 for _, won, _ in recent if won)
         win_rate = wins / len(recent)
-        
-        # Adjustment logic:
-        # win_rate > 0.60 → lower threshold (up to -0.15)
-        # win_rate < 0.50 → raise threshold (up to +0.15)
-        # win_rate = 0.55 → no adjustment
-        target_win_rate = 0.55
-        adjustment = (target_win_rate - win_rate) * 0.5  # Scale factor
+
+        # Adjustment logic (aggressive variant):
+        # win_rate > 0.60 → lower threshold aggressively (up to -0.15)
+        # win_rate < 0.45 → raise threshold conservatively (up to +0.15)
+        # win_rate = 0.50 → no adjustment (was 0.55 target)
+        target_win_rate = 0.50
+        adjustment = (target_win_rate - win_rate) * 0.6  # Scale factor (was 0.5)
         adjustment = max(-self.max_conf_adjustment, min(self.max_conf_adjustment, adjustment))
-        
+
         adapted_threshold = self.base_confidence + adjustment
-        
-        # Clamp to reasonable bounds
-        adapted_threshold = max(0.50, min(0.95, adapted_threshold))
-        
-        if len(recent) % 25 == 0:  # Log periodically
+
+        # Clamp to reasonable bounds — lower floor (0.35, was 0.45)
+        adapted_threshold = max(0.35, min(0.95, adapted_threshold))
+
+        if len(recent) % 20 == 0:  # Log periodically (was every 25)
             logger.info(
                 f"[{self.name}] Adaptive threshold | "
                 f"symbol={symbol} win_rate={win_rate:.2%} "
                 f"threshold={self.base_confidence:.2f}→{adapted_threshold:.2f}"
             )
-        
+
         return adapted_threshold
 
     def on_tick(self, tick: Tick) -> DifferSignal | None:
         """
         Process every tick to update the digit analyzer and emit a signal if confident.
-        
-        Uses enhanced multi-factor analysis with adaptive thresholds.
+
+        Digit ban logic:
+          - After trading digit != X → BAN digit X (don't trade it again immediately)
+          - Look for next best digit that is NOT banned
+          - Digit X is UNBANNED when it naturally appears in the price stream
+            (meaning it just showed up, so it's "used up" and safe to consider again)
+          - On LOSS → clear all bans, re-evaluate fresh
         """
         # Initialize analyzer for this symbol if needed
         if tick.symbol not in self.analyzers:
@@ -121,31 +132,45 @@ class DiffersStrategy(LiveStrategy):
                 slow_window=self.slow_window
             )
             self.recent_trades[tick.symbol] = []
-        
+            self._locked_digit[tick.symbol] = None   # stores the currently BANNED digit
+            self._lock_reason[tick.symbol] = ""
+            self._lock_grace_ticks[tick.symbol] = 0
+
         analyzer = self.analyzers[tick.symbol]
         analyzer.update(tick.price)
-        
-        # Get the safest digit to exclude with confidence score
-        safe_digit, confidence = analyzer.safest_exclusion_digit()
-        
-        # Get adaptive threshold based on recent performance
+
+        # Check if the banned digit just appeared in the price stream → unban it
+        # (skip during grace period right after a trade to avoid the settlement tick itself)
+        current_last_digit = analyzer.current_digit
+        banned = self._locked_digit.get(tick.symbol)
+        grace = self._lock_grace_ticks.get(tick.symbol, 0)
+        if grace > 0:
+            self._lock_grace_ticks[tick.symbol] = grace - 1
+        elif banned is not None and current_last_digit == banned:
+            logger.info(
+                f"[{self.name}] Banned digit {banned} appeared in stream — unbanning for {tick.symbol}"
+            )
+            self._locked_digit[tick.symbol] = None
+            self._lock_reason[tick.symbol] = ""
+
+        # Pick the best digit, but exclude the currently banned digit
+        banned = self._locked_digit.get(tick.symbol)
+        safe_digit, confidence = analyzer.safest_exclusion_digit(banned_digit=banned)
+
         threshold = self._get_adaptive_threshold(tick.symbol)
-        
-        # Only trade when confidence exceeds adaptive threshold
         if confidence >= threshold:
-            # Get diagnostic info for metadata
             diagnostics = analyzer.get_diagnostic_info()
-            
+
             logger.debug(
                 f"[{self.name}] Signal generated | "
                 f"symbol={tick.symbol} exclude_digit={safe_digit} "
                 f"confidence={confidence:.3f} threshold={threshold:.3f} "
-                f"volatility={diagnostics['volatility_factor']:.3f}"
+                f"banned={banned}"
             )
-            
+
             return DifferSignal(
                 symbol=tick.symbol,
-                signal_type=SignalType.BUY,  # DIGITDIFF is always a "Buy" of a diff contract
+                signal_type=SignalType.BUY,
                 confidence=confidence,
                 price=tick.price,
                 timestamp=tick.timestamp,
@@ -157,6 +182,7 @@ class DiffersStrategy(LiveStrategy):
                     "confidence": confidence,
                     "threshold": threshold,
                     "total_ticks": analyzer.total_ticks,
+                    "banned_digit": banned,
                     "volatility_factor": diagnostics["volatility_factor"],
                     "current_streak": diagnostics["current_streak"],
                     "current_digit": diagnostics["current_digit"],
@@ -165,23 +191,45 @@ class DiffersStrategy(LiveStrategy):
                     "markov_prob": diagnostics["markov_probs"][safe_digit],
                 }
             )
-        
+
         return None
     
     def record_trade_outcome(self, symbol: str, excluded_digit: int, won: bool, confidence: float) -> None:
         """
-        Record the outcome of a trade for adaptive learning.
-        Should be called by the execution engine after contract settlement.
+        Record the outcome of a trade for adaptive learning and digit ban management.
+
+        Ban rules:
+          - WIN or LOSS → BAN the digit just traded (don't trade it again immediately)
+          - Ban lifts when the digit naturally appears in the price stream
+          - On LOSS → also clear ban so re-evaluation is fully fresh
         """
         if symbol not in self.recent_trades:
             self.recent_trades[symbol] = []
-        
+
         self.recent_trades[symbol].append((excluded_digit, won, confidence))
-        
-        # Also update the analyzer's historical tracking
+
+        # Update the analyzer's historical tracking
         if symbol in self.analyzers:
             self.analyzers[symbol].record_outcome(excluded_digit, won)
-        
+
+        if won:
+            # Ban the digit just traded — look for a different digit next time
+            self._locked_digit[symbol] = excluded_digit
+            self._lock_reason[symbol] = "just_traded"
+            self._lock_grace_ticks[symbol] = 3  # grace: ignore the settlement tick itself
+            logger.info(
+                f"[{self.name}] WIN on digit {excluded_digit} — banning digit {excluded_digit}, "
+                f"looking for next best digit for {symbol}"
+            )
+        else:
+            # On loss — clear the ban, re-evaluate completely fresh
+            self._locked_digit[symbol] = None
+            self._lock_reason[symbol] = ""
+            self._lock_grace_ticks[symbol] = 0
+            logger.info(
+                f"[{self.name}] LOSS on digit {excluded_digit} — clearing ban, re-evaluating for {symbol}"
+            )
+
         # Trim to window size
         if len(self.recent_trades[symbol]) > self.win_rate_window * 2:
             self.recent_trades[symbol] = self.recent_trades[symbol][-self.win_rate_window:]
