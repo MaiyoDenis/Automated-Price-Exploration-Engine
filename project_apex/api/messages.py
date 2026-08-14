@@ -73,6 +73,56 @@ class MessageBuilder:
             FIELD_REQ_ID: self._next_req_id(),
         }
 
+    def proposal(self, symbol: str, amount: float, contract_type: str) -> dict[str, Any]:
+        self._validate_required_string(FIELD_SYMBOL, symbol)
+        return {
+            "proposal": 1,
+            "amount": amount,
+            "basis": "stake",
+            "contract_type": contract_type,
+            "currency": "USD",
+            "duration": 1,
+            "duration_unit": "d",
+            "underlying_symbol": symbol,
+            FIELD_REQ_ID: self._next_req_id(),
+        }
+
+    def digit_proposal(self, symbol: str, amount: float, contract_type: str, barrier: int, duration_ticks: int = 1) -> dict[str, Any]:
+        self._validate_required_string(FIELD_SYMBOL, symbol)
+        return {
+            "proposal": 1,
+            "amount": amount,
+            "basis": "stake",
+            "contract_type": contract_type,
+            "currency": "USD",
+            "duration": duration_ticks,
+            "duration_unit": "t",  # ticks
+            "underlying_symbol": symbol,
+            "barrier": str(barrier),
+            FIELD_REQ_ID: self._next_req_id(),
+        }
+
+    def buy(self, proposal_id: str, price: float) -> dict[str, Any]:
+        self._validate_required_string("proposal_id", proposal_id)
+        return {
+            "buy": proposal_id,
+            "price": price,
+            FIELD_REQ_ID: self._next_req_id(),
+        }
+
+    def sell(self, contract_id: int) -> dict[str, Any]:
+        return {
+            "sell": contract_id,
+            "price": 0,
+            FIELD_REQ_ID: self._next_req_id(),
+        }
+
+    def balance(self) -> dict[str, Any]:
+        return {
+            "balance": 1,
+            FIELD_REQ_ID: self._next_req_id(),
+        }
+
     def ping(self) -> dict[str, Any]:
         return {
             "ping": 1,
@@ -158,9 +208,9 @@ class MessageParser:
         if msg_type in ("pong", "ping"):
             return None
 
-        # Ignore authorize responses here since they don't produce a domain object
-        if msg_type == "authorize":
+        # Ignore authorize and execution responses here since they don't produce a domain object
+        if msg_type in ("authorize", "proposal", "buy", "sell", "balance"):
             return None
 
-        logger.warning(f"MessageParser encountered unknown msg_type: '{msg_type}'. Payload: {raw}")
+        logger.debug(f"MessageParser encountered unknown msg_type: '{msg_type}'. Payload: {raw}")
         return None

@@ -53,13 +53,19 @@ class DerivClient(MarketDataProvider):
             self._heartbeat_interval = 30.0
 
         self._active_subscriptions: set[str] = set()
+        self._pending_requests: dict[int, asyncio.Future] = {}
 
     async def _fetch_otp_url(self) -> str:
         """Fetch the temporary WebSocket URL using the OTP REST endpoint."""
         rest_url = self._config.get_str("api", "rest_url")
-        is_paper_trading = self._config.get("trading", "paper_trading")
         
-        if is_paper_trading:
+        # Determine which credentials to use based on config
+        try:
+            account_type = self._config.get("api", "account_type")
+        except Exception:
+            account_type = "demo"
+            
+        if account_type == "demo":
             account_id = self._env.demo_account_id
             token = self._env.demo_token
             logger.info("Connecting with DEMO account credentials.")
@@ -137,6 +143,29 @@ class DerivClient(MarketDataProvider):
     async def receive(self) -> Tick:
         return await self._queue.get()
 
+    async def send_request(self, request_msg: dict) -> dict:
+        """Sends an RPC request over the WebSocket and awaits the response."""
+        req_id = request_msg.get("req_id")
+        if req_id is None:
+            raise ValueError("Request message must contain a req_id to await a response.")
+            
+        future = asyncio.get_event_loop().create_future()
+        self._pending_requests[req_id] = future
+        
+        try:
+            await self._ws.send(request_msg)
+            # Wait for response with a reasonable timeout
+            response = await asyncio.wait_for(future, timeout=10.0)
+            
+            # Check for error in response
+            if "error" in response:
+                error = response["error"]
+                raise DerivAPIError(error.get("code", "UNKNOWN"), error.get("message", "Unknown API Error"))
+                
+            return response
+        finally:
+            self._pending_requests.pop(req_id, None)
+
     def _start_receive_loop(self) -> None:
         if self._receive_task is None or self._receive_task.done():
             self._receive_task = asyncio.create_task(self._receive_loop())
@@ -160,6 +189,14 @@ class DerivClient(MarketDataProvider):
         while True:
             try:
                 raw_msg = await self._ws.receive()
+                
+                if "req_id" in raw_msg:
+                    req_id = raw_msg["req_id"]
+                    if req_id in self._pending_requests:
+                        if not self._pending_requests[req_id].done():
+                            self._pending_requests[req_id].set_result(raw_msg)
+                        continue
+                        
                 parsed = self._parser.parse(raw_msg)
                 
                 if isinstance(parsed, Tick):
@@ -207,3 +244,84 @@ class DerivClient(MarketDataProvider):
                 
         logger.critical("Max reconnection attempts exhausted.")
         raise ConnectionFailedError("Max reconnection attempts exhausted.")
+
+    async def get_account_balance(self, account_type: str = "demo") -> dict:
+        """
+        Fetch account balance from Deriv.
+
+        For the currently-connected account type, uses the live WS.
+        For the other account type, opens a temporary WS connection.
+        """
+        # Determine what account this WS connection is authenticated for
+        try:
+            connected_type = self._config.get("api", "account_type") or "demo"
+        except Exception:
+            connected_type = "demo"
+
+        if account_type == connected_type and self.is_connected:
+            # Can use the existing live connection
+            try:
+                req = self._builder.balance()
+                response = await self.send_request(req)
+                balance_data = response.get("balance", {})
+                return {
+                    "balance": float(balance_data.get("balance", 0.0)),
+                    "currency": balance_data.get("currency", "USD"),
+                    "account_type": account_type,
+                }
+            except Exception as e:
+                logger.warning(f"[DerivClient] Balance fetch error: {e}")
+                return {"balance": None, "currency": "USD", "account_type": account_type}
+        else:
+            # Open a short-lived connection with alternate credentials
+            return await self._fetch_balance_via_temp_connection(account_type)
+
+    async def _fetch_balance_via_temp_connection(self, account_type: str) -> dict:
+        """Open a temporary WS session to fetch balance for the given account type."""
+        rest_url = self._config.get_str("api", "rest_url")
+        app_id = self._env.app_id
+
+        if account_type == "demo":
+            account_id = self._env.demo_account_id
+            token = self._env.demo_token
+        else:
+            account_id = self._env.real_account_id
+            token = self._env.real_token
+
+        try:
+            url = f"{rest_url}/trading/v1/options/accounts/{account_id}/otp"
+            headers = {"Authorization": f"Bearer {token}", "Deriv-App-ID": app_id}
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, headers=headers) as resp:
+                    if resp.status != 200:
+                        text = await resp.text()
+                        logger.warning(f"[DerivClient] OTP failed for {account_type}: {text}")
+                        return {"balance": None, "currency": "USD", "account_type": account_type}
+                    data = await resp.json()
+                    ws_url = data["data"]["url"]
+
+            import json, websockets
+            async with websockets.connect(ws_url) as ws:
+                # Request balance
+                builder = MessageBuilder()
+                req = builder.balance()
+                await ws.send(json.dumps(req))
+
+                # Read responses until we get the balance
+                for _ in range(5):
+                    raw = await asyncio.wait_for(ws.recv(), timeout=5.0)
+                    msg = json.loads(raw)
+                    if msg.get("msg_type") == "balance":
+                        bal = msg.get("balance", {})
+                        return {
+                            "balance": float(bal.get("balance", 0.0)),
+                            "currency": bal.get("currency", "USD"),
+                            "account_type": account_type,
+                        }
+        except Exception as e:
+            logger.warning(f"[DerivClient] Temp balance fetch error ({account_type}): {e}")
+
+        return {"balance": None, "currency": "USD", "account_type": account_type}
+
+
