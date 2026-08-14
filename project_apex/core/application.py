@@ -38,10 +38,13 @@ from project_apex.strategies.bollinger_breakout import BollingerBreakoutStrategy
 from project_apex.strategies.multi_strategy import MultiStrategyEnsemble
 from project_apex.strategies.ml_strategy import MLStrategy
 from project_apex.strategies.meta_strategy import MetaRegimeStrategy
+from project_apex.strategies.scalping import VWAPScalperStrategy
+from project_apex.strategies.differs_strategy import DiffersStrategy
 
 # Risk layer
 from project_apex.risk.engine import RiskEngine
 from project_apex.risk.circuit_breaker import CircuitBreaker
+from project_apex.risk.differs_risk_engine import DiffersRiskEngine
 
 # Execution layer
 from project_apex.execution.paper_broker import PaperBroker
@@ -49,6 +52,7 @@ from project_apex.execution.live_broker import LiveBroker
 from project_apex.execution.portfolio import Portfolio
 from project_apex.execution.models import Trade
 from project_apex.risk.models import TradeOrder
+from project_apex.execution.differs_executor import DiffersExecutor
 
 # Intelligence layer
 from project_apex.intelligence.market_selector import MarketSelector, DERIV_UNIVERSE
@@ -73,14 +77,15 @@ from project_apex.models.tick import Tick
 class Application:
     """Coordinates all application services in autonomous elite mode."""
 
-    def __init__(self, paper_trading: bool = True) -> None:
+    def __init__(self) -> None:
         setup_logger()
         logger.info("Starting Project APEX — Elite Autonomous Mode...")
 
         self.config = Config()
         self.environment = Environment()
-        self.paper_trading = paper_trading
-        logger.info(f"Mode: {'Paper Trading' if paper_trading else 'LIVE Trading'}")
+        # Read paper_trading from config so that config.yaml changes take effect on restart.
+        self.paper_trading: bool = bool(self.config.get("trading", "paper_trading") if self.config.get("trading", "paper_trading") is not None else True)
+        logger.info(f"Mode: {'Paper Trading' if self.paper_trading else 'LIVE Trading'}")
 
         # Service references
         self.database: Optional[SQLiteManager] = None
@@ -100,6 +105,17 @@ class Application:
         self.alert_manager: Optional[AlertManager] = None
         self.health_monitor: Optional[HealthMonitor] = None
         self.dashboard: Optional[DashboardServer] = None
+        
+        self.trading_mode: str = "standard"
+        self.standard_risk_engine: Optional[RiskEngine] = None
+        self.scalping_risk_engine: Optional[RiskEngine] = None
+        self.standard_strategy_engine: Optional[StrategyEngine] = None
+        self.scalping_strategy_engine: Optional[StrategyEngine] = None
+        
+        # Differs Mode
+        self.differs_risk_engine: Optional[DiffersRiskEngine] = None
+        self.differs_strategy_engine: Optional[StrategyEngine] = None
+        self.differs_executor: Optional[DiffersExecutor] = None
 
     async def initialize(self) -> None:
         """Start all required services in dependency order."""
@@ -109,6 +125,7 @@ class Application:
         db_path = self.config.get_str("database", "path")
         self.database = SQLiteManager(db_path)
         self.database.connect()
+        self.database.initialize()
         self.repository = SQLiteMarketDataRepository(self.database)
         self.repository.initialize()
 
@@ -125,7 +142,10 @@ class Application:
             spread = float(self.config.get("trading", "spread_pct") or 0.0002)
             self.broker = PaperBroker(slippage_pct=slippage, spread_pct=spread)
         else:
-            self.broker = LiveBroker()
+            # deriv_client is wired in step 8; LiveBroker holds a reference to it.
+            # We create deriv_client early so LiveBroker can be initialised here.
+            self.deriv_client = DerivClient(self.config)
+            self.broker = LiveBroker(client=self.deriv_client)
 
         self.broker.add_trade_handler(self._on_trade_closed)
 
@@ -139,8 +159,8 @@ class Application:
             db=self.database,  # enables persistent halt state across restarts
         )
 
-        # ── 5. Risk Engine ────────────────────────────────────────────────────
-        self.risk_engine = RiskEngine(
+        # ── 5. Standard Risk Engine ───────────────────────────────────────────
+        self.standard_risk_engine = RiskEngine(
             max_daily_loss_pct=float(self.config.get("risk", "max_daily_loss_pct") or 0.05),
             max_drawdown_pct=float(self.config.get("risk", "max_drawdown_pct") or 0.15),
             max_open_positions=int(self.config.get("risk", "max_open_positions") or 3),
@@ -149,15 +169,29 @@ class Application:
             kelly_fraction=float(self.config.get("risk", "kelly_fraction") or 0.25),
             min_confidence=float(self.config.get("risk", "min_confidence") or 0.3),
         )
-        # Wire circuit breaker into risk engine
-        self.risk_engine.set_circuit_breaker(self.circuit_breaker)
-
-        # Inject live portfolio state getters
+        self.standard_risk_engine.set_circuit_breaker(self.circuit_breaker)
         getters = self.portfolio.get_risk_getters()
-        self.risk_engine.set_portfolio_getters(**getters)
-        self.risk_engine.add_order_handler(self._on_order_approved)
+        self.standard_risk_engine.set_portfolio_getters(**getters)
+        self.standard_risk_engine.add_order_handler(self._on_order_approved)
 
-        # ── 6. Strategy Engine + MetaRegime Ensemble ──────────────────────────
+        # ── 5b. Scalping Risk Engine ──────────────────────────────────────────
+        self.scalping_risk_engine = RiskEngine(
+            max_daily_loss_pct=float(self.config.get("risk", "max_daily_loss_pct") or 0.05),
+            max_drawdown_pct=float(self.config.get("risk", "max_drawdown_pct") or 0.15),
+            max_open_positions=int(self.config.get("risk", "max_open_positions") or 5), # Allow more for scalping
+            symbol_cooldown_s=10.0, # Tight cooldown
+            risk_per_trade_pct=float(self.config.get("risk", "risk_per_trade_pct") or 0.01),
+            kelly_fraction=0.1, # Less Kelly risk per trade for scalping
+            atr_stop_multiplier=0.5, # Very tight SL
+            atr_tp_multiplier=1.0,   # Quick TP
+            min_confidence=0.8,
+            enable_correlation_filter=False, # Speed over correlation
+        )
+        self.scalping_risk_engine.set_circuit_breaker(self.circuit_breaker)
+        self.scalping_risk_engine.set_portfolio_getters(**getters)
+        self.scalping_risk_engine.add_order_handler(self._on_order_approved)
+
+        # ── 6. Standard Strategy Engine (Ensemble) ────────────────────────────
         timeframes = self.config.get_list("market", "timeframes")
         primary_tf = timeframes[0]
         secondary_tf = timeframes[1] if len(timeframes) > 1 else primary_tf
@@ -181,16 +215,14 @@ class Application:
             min_vote_fraction=0.55,
             min_strategies_agree=2,
             name="ApexEnsemble",
-            db=self.database,  # enables persistent strategy performance stats
+            db=self.database,
         )
 
-        # ML strategy as a parallel voter in the ensemble
         ml_strategy = MLStrategy(
             name="ML_XGBoost",
             config={"timeframe": primary_tf, "model_path": "datasets/xgb_model.joblib"},
         )
 
-        # MetaRegimeStrategy routes to the right strategies based on regime
         meta_strategy = MetaRegimeStrategy(
             trend_strategies=[macd_strategy, ml_strategy],
             ranging_strategies=[rsi_strategy, bb_strategy],
@@ -198,10 +230,83 @@ class Application:
             config={"timeframe": primary_tf},
         )
 
-        self.strategy_engine = StrategyEngine()
-        self.strategy_engine.register(meta_strategy)
-        self.strategy_engine.register(self.ensemble)
-        self.strategy_engine.add_signal_handler(self.risk_engine.evaluate)
+        self.standard_strategy_engine = StrategyEngine()
+        self.standard_strategy_engine.register(meta_strategy)
+        self.standard_strategy_engine.register(self.ensemble)
+        self.standard_strategy_engine.add_signal_handler(self.standard_risk_engine.evaluate)
+
+        # ── 6b. Scalping Strategy Engine ──────────────────────────────────────
+        scalping_strategy = VWAPScalperStrategy(
+            name="VWAP_Scalper",
+            config={"timeframe": primary_tf},
+        )
+        self.scalping_strategy_engine = StrategyEngine()
+        self.scalping_strategy_engine.register(scalping_strategy)
+        self.scalping_strategy_engine.add_signal_handler(self.scalping_risk_engine.evaluate)
+
+        # ── 6c. Differs Engine ───────────────────────────────────────────────
+        # Must only be used in REAL mode as PaperBroker doesn't support digit contracts yet.
+        # But for logic flow, we init it here.
+        if self.deriv_client:
+            self.differs_executor = DiffersExecutor(provider=self.deriv_client, portfolio=self.portfolio)
+
+        self.differs_risk_engine = DiffersRiskEngine(
+            max_daily_loss_pct=float(self.config.get("risk", "max_daily_loss_pct") or 0.05),
+            loss_cooldown_ticks=5,
+            base_stake=2.0,                    # Normal trade stake
+            recovery_stake=22.0,               # Recovery stake after 1 loss
+            recovery_min_confidence=0.70,      # Must be high-confidence to fire $22
+            max_consecutive_losses=2,          # Halt session after 2 losses in a row
+            payout_ratio=0.097,                # ~9.7% payout
+        )
+
+        # Build a live win-rate getter that reads from the DiffersStrategy instance.
+        # This is set after differs_strategy is created (see below) via a closure.
+        _differs_strategy_ref: list = []   # will hold the DiffersStrategy instance
+
+        def _live_win_rate(strategy_name: str) -> float | None:
+            if not _differs_strategy_ref:
+                return None
+            s = _differs_strategy_ref[0]
+            # Average win rate across all tracked symbols
+            all_trades = [t for trades in s.recent_trades.values() for t in trades]
+            if len(all_trades) < 8:
+                return None
+            wins = sum(1 for _, won, _ in all_trades if won)
+            return wins / len(all_trades)
+
+        # Pass portfolio getters
+        self.differs_risk_engine.set_portfolio_getters(
+            daily_pnl_pct=self.portfolio.get_risk_getters()["daily_pnl_pct"],
+            open_position_count=lambda: 1 if self.differs_executor and self.differs_executor.active_contract_id else 0,
+            equity=self.portfolio.get_risk_getters()["equity"],
+            strategy_win_rate=_live_win_rate,   # Live Kelly sizing
+        )
+
+        if self.differs_executor:
+            self.differs_risk_engine.add_order_handler(self.differs_executor.execute_order)
+            
+            def _on_differs_settled(won: bool, order: TradeOrder | None) -> None:
+                self.differs_risk_engine.on_trade_result(won)
+                if order and _differs_strategy_ref:
+                    _differs_strategy_ref[0].record_trade_outcome(
+                        symbol=order.symbol,
+                        excluded_digit=order.metadata.get("barrier", 0),
+                        won=won,
+                        confidence=order.signal_confidence
+                    )
+                    
+            self.differs_executor.set_settlement_callback(_on_differs_settled)
+
+        differs_strategy = DiffersStrategy(config={"base_confidence": 0.70, "duration_ticks": 1})
+        _differs_strategy_ref.append(differs_strategy)   # Wire win-rate getter
+        self.differs_strategy_engine = StrategyEngine()
+        self.differs_strategy_engine.register(differs_strategy)
+        self.differs_strategy_engine.add_signal_handler(self.differs_risk_engine.evaluate)
+
+        # Set default active engines
+        self.risk_engine = self.standard_risk_engine
+        self.strategy_engine = self.standard_strategy_engine
 
         # ── 7. ML Auto-Trainer ────────────────────────────────────────────────
         predictor = ml_strategy.predictor if hasattr(ml_strategy, "predictor") else XGBoostPredictor()
@@ -215,7 +320,9 @@ class Application:
         )
 
         # ── 8. DerivClient ────────────────────────────────────────────────────
-        self.deriv_client = DerivClient(self.config)
+        # Already created above when paper_trading=False; skip duplicate instantiation.
+        if self.deriv_client is None:
+            self.deriv_client = DerivClient(self.config)
 
         # ── 9. CandleBuilder ──────────────────────────────────────────────────
         self.candle_builder = CandleBuilder(
@@ -241,9 +348,19 @@ class Application:
             candle_handler=self._on_candle_from_autopilot,
             top_n=int(self.config.get("intelligence", "top_n_symbols") or 2),
             rescore_interval_s=float(self.config.get("intelligence", "rescore_interval_s") or 300.0),
+            initial_symbols=initial_symbols,  # Seed so strategies work from tick 1
         )
 
-        # ── 11. TickCollector ─────────────────────────────────────────────────
+        # ── 11. Health Monitor ────────────────────────────────────────────────
+        # Created before TickCollector so its record_tick can be passed as callback.
+        self.health_monitor = HealthMonitor(
+            app=self,
+            stale_tick_threshold_s=30.0,   # YELLOW after 30s without a tick
+            stale_tick_critical_s=120.0,   # RED after 2 min (e.g. full disconnect)
+        )
+        await self.health_monitor.start()
+
+        # ── 12. TickCollector ─────────────────────────────────────────────────
         stats_interval = self.config.get_int("market", "stats_interval")
         self.tick_collector = TickCollector(
             provider=self.deriv_client,
@@ -252,11 +369,8 @@ class Application:
             symbols=initial_symbols,
             stats_interval=stats_interval,
             valid_timeframes=timeframes,
+            tick_callback=self._on_tick_received,  # freshness tracked per actual tick + tick strategy routing
         )
-
-        # ── 12. Health Monitor ────────────────────────────────────────────────
-        self.health_monitor = HealthMonitor(app=self)
-        await self.health_monitor.start()
 
         # ── 13. Dashboard Server ──────────────────────────────────────────────
         self.dashboard = DashboardServer(self)
@@ -264,6 +378,8 @@ class Application:
 
         # ── 14. Connect & Start ───────────────────────────────────────────────
         await self.deriv_client.connect()
+        if self.differs_executor:
+            await self.differs_executor.start()
         await self.tick_collector.start()
         await self.autopilot.start()
         await self.model_trainer.start()
@@ -272,13 +388,105 @@ class Application:
         logger.info(f"Initial symbols: {initial_symbols}")
         logger.info(f"Timeframes: {timeframes}s")
 
+    def set_trading_mode(self, mode: str) -> None:
+        """Hot-swap the active trading mode (standard, scalping, or differs)."""
+        if mode not in ("standard", "scalping", "differs"):
+            logger.warning(f"Attempted to set unknown trading mode: {mode}")
+            return
+            
+        if self.trading_mode == mode:
+            return
+            
+        self.trading_mode = mode
+        if mode == "standard":
+            self.risk_engine = self.standard_risk_engine
+            self.strategy_engine = self.standard_strategy_engine
+            logger.success("[Application] Mode switched to STANDARD (Ensemble + ML)")
+        elif mode == "scalping":
+            self.risk_engine = self.scalping_risk_engine
+            self.strategy_engine = self.scalping_strategy_engine
+            logger.success("[Application] Mode switched to SCALPING (VWAP + EMA)")
+        elif mode == "differs":
+            # Just set the active engines, ticks will naturally flow there via _on_tick_received
+            self.risk_engine = self.differs_risk_engine
+            self.strategy_engine = self.differs_strategy_engine
+            logger.success("[Application] Mode switched to DIFFERS (Adaptive Digit Analyzer)")
+            
+        if self.alert_manager:
+            self.alert_manager.system(f"Trading mode switched to: {mode.upper()}")
+
+    async def switch_account(self, account_type: str) -> dict:
+        """
+        Hot-swap the active trading account between 'demo' and 'real'.
+        Closes all positions, disconnects, and reconnects with new credentials.
+        """
+        if account_type not in ("demo", "real"):
+            return {"success": False, "error": f"Invalid account type: {account_type}"}
+
+        current_type = self.config.get("api", "account_type") or "demo"
+        if current_type == account_type:
+            return {"success": True, "message": f"Already on {account_type} account"}
+
+        logger.warning(f"[Application] Switching account from {current_type} → {account_type}")
+
+        # 1. Close all open positions safely
+        if self.broker and hasattr(self.broker, "open_positions"):
+            for pos_id in list(self.broker.open_positions.keys()):
+                try:
+                    symbol = self.broker.open_positions[pos_id].symbol
+                    current_price = self.portfolio._latest_price.get(symbol, 0.0)
+                    await self.broker.close_position(pos_id, current_price, reason="account_switch")
+                    logger.info(f"[Application] Closed position {pos_id[:8]} before account switch")
+                except Exception as e:
+                    logger.warning(f"[Application] Could not close position {pos_id[:8]}: {e}")
+
+        # 2. Stop tick collection and unsubscribe
+        active_symbols = list(self.autopilot.active_symbols) if self.autopilot else []
+        if self.tick_collector:
+            await self.tick_collector.stop()
+
+        # 3. Disconnect WebSocket
+        if self.deriv_client:
+            await self.deriv_client.disconnect()
+
+        # 4. Update the account type in config
+        self.config._config["api"]["account_type"] = account_type
+
+        # 5. Reconnect with new credentials
+        try:
+            await self.deriv_client.connect()
+        except Exception as e:
+            logger.error(f"[Application] Reconnect failed after account switch: {e}")
+            return {"success": False, "error": str(e)}
+
+        # 6. Re-subscribe to symbols and restart tick collection
+        if self.tick_collector and active_symbols:
+            await self.tick_collector.start()
+
+        # 7. Update LiveBroker reference (it already holds the same DerivClient)
+        logger.success(f"[Application] Account switched to {account_type.upper()} ✓")
+        if self.alert_manager:
+            self.alert_manager.system(f"Account switched to {account_type.upper()}")
+
+        return {"success": True, "account_type": account_type}
+
     # ── Callbacks ─────────────────────────────────────────────────────────────
+
+    def _on_tick_received(self, tick: Tick) -> None:
+        """Route ticks to health monitor and active strategy engine if needed."""
+        if self.health_monitor:
+            self.health_monitor.record_tick(tick.symbol)
+            
+        # Tick-level strategy routing
+        if self.trading_mode == "differs" and self.strategy_engine:
+            asyncio.create_task(self.strategy_engine.on_tick(tick))
+            if self.differs_risk_engine:
+                self.differs_risk_engine.on_tick()
 
     async def _on_candle_completed(self, candle: Candle) -> None:
         """Candle from the builder → forward to autopilot (which filters by active symbols)."""
-        # Update health monitor
-        if self.health_monitor:
-            self.health_monitor.record_tick(candle.symbol)
+        # Note: health monitor freshness is tracked per actual tick via tick_callback
+        # on the TickCollector — not here, to avoid 1-per-minute false-stale warnings.
 
         # Update portfolio price for unrealized PnL
         if self.portfolio:
@@ -418,6 +626,9 @@ class Application:
 
         if self.dashboard:
             await self.dashboard.stop()
+
+        if self.differs_executor:
+            await self.differs_executor.stop()
 
         if self.tick_collector:
             await self.tick_collector.stop()
