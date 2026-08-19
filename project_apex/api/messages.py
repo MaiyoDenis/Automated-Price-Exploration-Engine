@@ -83,7 +83,7 @@ class MessageBuilder:
             "currency": "USD",
             "duration": 1,
             "duration_unit": "d",
-            "underlying_symbol": symbol,
+            "symbol": symbol,          # Deriv API field is "symbol", not "underlying_symbol"
             FIELD_REQ_ID: self._next_req_id(),
         }
 
@@ -208,8 +208,8 @@ class MessageParser:
         if msg_type in ("pong", "ping"):
             return None
 
-        # Ignore authorize and execution responses here since they don't produce a domain object
-        if msg_type in ("authorize", "proposal", "buy", "sell", "balance"):
+        # Ignore execution/auth responses — they're handled via send_request() correlation
+        if msg_type in ("authorize", "proposal", "buy", "sell", "balance", "proposal_open_contract"):
             return None
 
         logger.debug(f"MessageParser encountered unknown msg_type: '{msg_type}'. Payload: {raw}")

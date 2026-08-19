@@ -82,10 +82,12 @@ class Application:
         logger.info("Starting Project APEX — Elite Autonomous Mode...")
 
         self.config = Config()
-        self.environment = Environment()
         # Read paper_trading from config so that config.yaml changes take effect on restart.
         self.paper_trading: bool = bool(self.config.get("trading", "paper_trading") if self.config.get("trading", "paper_trading") is not None else True)
         logger.info(f"Mode: {'Paper Trading' if self.paper_trading else 'LIVE Trading'}")
+        # Validate credentials eagerly — fail at startup with a clear message
+        # rather than deep inside connect() with a cryptic network error.
+        self.environment = Environment(require_live_credentials=not self.paper_trading)
 
         # Service references
         self.database: Optional[SQLiteManager] = None
@@ -473,24 +475,70 @@ class Application:
     # ── Callbacks ─────────────────────────────────────────────────────────────
 
     def _on_tick_received(self, tick: Tick) -> None:
-        """Route ticks to health monitor and active strategy engine if needed."""
+        """
+        Route ticks to health monitor, stop/TP checker, and active strategy engine.
+
+        Tick-level stop/TP ensures stops fire at real market prices, not just on
+        candle closes (which can be 60s apart on volatility indices).
+        """
         if self.health_monitor:
             self.health_monitor.record_tick(tick.symbol)
-            
-        # Tick-level strategy routing
+
+        # Update latest price in portfolio for live unrealized P&L
+        if self.portfolio:
+            self.portfolio.update_price(tick.symbol, tick.price)
+
+        # Tick-level stop-loss / take-profit for live broker
+        # Paper broker uses candle close (fine for simulation).
+        # Live broker needs tick-level resolution to avoid slipping through stops.
+        if not self.paper_trading and self.broker:
+            asyncio.create_task(
+                self.broker.check_stops_and_targets(
+                    symbol=tick.symbol,
+                    current_price=tick.price,
+                    current_time_ms=tick.timestamp,
+                )
+            )
+
+        # Tick-level strategy routing for the Differs engine
         if self.trading_mode == "differs" and self.strategy_engine:
             asyncio.create_task(self.strategy_engine.on_tick(tick))
             if self.differs_risk_engine:
                 self.differs_risk_engine.on_tick()
 
     async def _on_candle_completed(self, candle: Candle) -> None:
-        """Candle from the builder → forward to autopilot (which filters by active symbols)."""
-        # Note: health monitor freshness is tracked per actual tick via tick_callback
-        # on the TickCollector — not here, to avoid 1-per-minute false-stale warnings.
-
-        # Update portfolio price for unrealized PnL
+        """Candle from the builder → update portfolio ATR, forward to autopilot."""
+        # Update portfolio price for unrealized PnL (also updated per-tick in live mode)
         if self.portfolio:
             self.portfolio.update_price(candle.symbol, candle.close)
+
+        # ── ATR update ────────────────────────────────────────────────────────
+        # Compute a rolling ATR(14) from the last 30 candles in the repository
+        # and push it into the portfolio so RiskEngine stop sizing is accurate.
+        if self.portfolio and self.repository:
+            try:
+                import time as _time
+                start_ts = int(_time.time()) - 86400 * 2  # last 2 days is enough for ATR(14)
+                recent = self.repository.get_candles(
+                    candle.symbol, candle.timeframe, start_ts, int(_time.time())
+                )
+                if recent and len(recent) >= 2:
+                    import pandas as _pd
+                    df = _pd.DataFrame(
+                        [(c.high, c.low, c.close) for c in recent],
+                        columns=["high", "low", "close"],
+                    )
+                    prev_close = df["close"].shift(1)
+                    tr = _pd.concat([
+                        df["high"] - df["low"],
+                        (df["high"] - prev_close).abs(),
+                        (df["low"] - prev_close).abs(),
+                    ], axis=1).max(axis=1)
+                    atr = float(tr.tail(14).mean())
+                    if atr > 0:
+                        self.portfolio.update_atr(candle.symbol, atr)
+            except Exception as _exc:
+                logger.debug(f"[Application] ATR update failed for {candle.symbol}: {_exc}")
 
         # Update circuit breaker with latest equity
         if self.circuit_breaker and self.portfolio:
@@ -500,8 +548,8 @@ class Application:
         if self.autopilot:
             await self.autopilot.on_candle(candle)
 
-        # Check stop/target hits on every candle close
-        if self.broker:
+        # Paper mode: candle-level stop/TP check (live mode uses tick-level above)
+        if self.paper_trading and self.broker:
             await self.broker.check_stops_and_targets(
                 symbol=candle.symbol,
                 current_price=candle.close,

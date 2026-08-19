@@ -228,5 +228,20 @@ class TickCollector:
         logger.info(f"[TickCollector] Dynamically subscribed to {symbol}")
 
     async def unsubscribe(self, symbol: str) -> None:
-        """Dynamically unsubscribe from a symbol (called by Autopilot)."""
+        """
+        Dynamically unsubscribe from a symbol (called by Autopilot).
+
+        Sends the actual forget request to the provider so the WebSocket
+        stream stops. Without this, dropped symbols kept streaming and
+        leaking subscriptions.
+        """
+        try:
+            await self.provider.unsubscribe(symbol)
+        except Exception as exc:
+            logger.warning(f"[TickCollector] unsubscribe({symbol}) provider error: {exc}")
+
+        # Remove from active list — match by symbol value (sub_id == symbol)
+        if symbol in self._active_subscriptions:
+            self._active_subscriptions.remove(symbol)
+        self._latest_timestamps.pop(symbol, None)
         logger.info(f"[TickCollector] Unsubscribed from {symbol}")
