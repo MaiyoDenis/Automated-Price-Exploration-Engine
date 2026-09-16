@@ -40,6 +40,7 @@ from project_apex.strategies.ml_strategy import MLStrategy
 from project_apex.strategies.meta_strategy import MetaRegimeStrategy
 from project_apex.strategies.scalping import VWAPScalperStrategy
 from project_apex.strategies.differs_strategy import DiffersStrategy
+from project_apex.strategies.holy_grail_strategy import HolyGrailStrategy
 
 # Risk layer
 from project_apex.risk.engine import RiskEngine
@@ -118,6 +119,10 @@ class Application:
         self.differs_risk_engine: Optional[DiffersRiskEngine] = None
         self.differs_strategy_engine: Optional[StrategyEngine] = None
         self.differs_executor: Optional[DiffersExecutor] = None
+
+        # Holy Grail Mode
+        self.holy_grail_risk_engine: Optional[DiffersRiskEngine] = None
+        self.holy_grail_strategy_engine: Optional[StrategyEngine] = None
 
     async def initialize(self) -> None:
         """Start all required services in dependency order."""
@@ -256,8 +261,8 @@ class Application:
             max_daily_loss_pct=float(self.config.get("risk", "max_daily_loss_pct") or 0.05),
             loss_cooldown_ticks=5,
             base_stake=2.0,                    # Normal trade stake
-            recovery_stake=22.0,               # Recovery stake after 1 loss
-            recovery_min_confidence=0.70,      # Must be high-confidence to fire $22
+            recovery_multiplier=11.0,          # Recovery multiplier after 1 loss
+            recovery_min_confidence=0.70,      # Must be high-confidence to fire recovery
             max_consecutive_losses=2,          # Halt session after 2 losses in a row
             payout_ratio=0.097,                # ~9.7% payout
         )
@@ -288,23 +293,91 @@ class Application:
         if self.differs_executor:
             self.differs_risk_engine.add_order_handler(self.differs_executor.execute_order)
             
-            def _on_differs_settled(won: bool, order: TradeOrder | None) -> None:
-                self.differs_risk_engine.on_trade_result(won)
-                if order and _differs_strategy_ref:
-                    _differs_strategy_ref[0].record_trade_outcome(
-                        symbol=order.symbol,
-                        excluded_digit=order.metadata.get("barrier", 0),
-                        won=won,
-                        confidence=order.signal_confidence
-                    )
-                    
-            self.differs_executor.set_settlement_callback(_on_differs_settled)
-
+        # Wait, the DiffersCallback is set down below instead of here.
+        
         differs_strategy = DiffersStrategy(config={"base_confidence": 0.70, "duration_ticks": 1})
         _differs_strategy_ref.append(differs_strategy)   # Wire win-rate getter
         self.differs_strategy_engine = StrategyEngine()
         self.differs_strategy_engine.register(differs_strategy)
         self.differs_strategy_engine.add_signal_handler(self.differs_risk_engine.evaluate)
+
+        # ── 6d. Holy Grail Engine ─────────────────────────────────────────────
+        self.holy_grail_risk_engine = DiffersRiskEngine(
+            max_daily_loss_pct=float(self.config.get("risk", "max_daily_loss_pct") or 0.05),
+            loss_cooldown_ticks=0,             # No cooldown for Holy Grail
+            base_stake=1.0,                    # Base stake $1
+            recovery_multiplier=11.0,          # 11x Martingale
+            recovery_min_confidence=0.50,      # Holy grail always has 0.99
+            max_consecutive_losses=2,          # Halt session after 2 losses
+            payout_ratio=0.09,                 # ~9% payout
+        )
+        
+        _hg_strategy_ref: list = []
+        
+        def _hg_live_win_rate(strategy_name: str) -> float | None:
+            if not _hg_strategy_ref:
+                return None
+            s = _hg_strategy_ref[0]
+            all_trades = [t for trades in s.recent_trades.values() for t in trades]
+            if len(all_trades) < 1:
+                return None
+            wins = sum(1 for _, won, _ in all_trades if won)
+            return wins / len(all_trades)
+            
+        self.holy_grail_risk_engine.set_portfolio_getters(
+            daily_pnl_pct=self.portfolio.get_risk_getters()["daily_pnl_pct"],
+            open_position_count=lambda: 1 if self.differs_executor and self.differs_executor.active_contract_id else 0,
+            equity=self.portfolio.get_risk_getters()["equity"],
+            strategy_win_rate=_hg_live_win_rate,
+        )
+
+        if self.differs_executor:
+            self.holy_grail_risk_engine.add_order_handler(self.differs_executor.execute_order)
+            
+            def _on_hg_settled(won: bool, order: TradeOrder | None) -> None:
+                self.holy_grail_risk_engine.on_trade_result(won, order)
+                if order and _hg_strategy_ref:
+                    _hg_strategy_ref[0].record_trade_outcome(
+                        symbol=order.symbol,
+                        excluded_digit=order.metadata.get("barrier", 0),
+                        won=won,
+                        confidence=order.signal_confidence
+                    )
+            
+            # Note: We need a way to switch the callback on the differs_executor when the mode switches,
+            # or just register a master callback that checks the current active mode.
+            # For simplicity, since the application dynamically switches risk engines, we'll
+            # intercept the settlement callback to route to the active risk engine.
+            
+        hg_strategy = HolyGrailStrategy(config={"duration_ticks": 1})
+        _hg_strategy_ref.append(hg_strategy)
+        self.holy_grail_strategy_engine = StrategyEngine()
+        self.holy_grail_strategy_engine.register(hg_strategy)
+        self.holy_grail_strategy_engine.add_signal_handler(self.holy_grail_risk_engine.evaluate)
+        
+        # ── Setup Master Differs Callback ─────────────────────────────────────
+        if self.differs_executor:
+            def _master_differs_settled(won: bool, order: TradeOrder | None) -> None:
+                if self.trading_mode == "differs" and self.differs_risk_engine:
+                    self.differs_risk_engine.on_trade_result(won, order)
+                    if order and _differs_strategy_ref:
+                        _differs_strategy_ref[0].record_trade_outcome(
+                            symbol=order.symbol,
+                            excluded_digit=order.metadata.get("barrier", 0),
+                            won=won,
+                            confidence=order.signal_confidence
+                        )
+                elif self.trading_mode == "holy_grail" and self.holy_grail_risk_engine:
+                    self.holy_grail_risk_engine.on_trade_result(won, order)
+                    if order and _hg_strategy_ref:
+                        _hg_strategy_ref[0].record_trade_outcome(
+                            symbol=order.symbol,
+                            excluded_digit=order.metadata.get("barrier", 0),
+                            won=won,
+                            confidence=order.signal_confidence
+                        )
+            
+            self.differs_executor.set_settlement_callback(_master_differs_settled)
 
         # Set default active engines
         self.risk_engine = self.standard_risk_engine
@@ -375,7 +448,7 @@ class Application:
         )
 
         # ── 13. Dashboard Server ──────────────────────────────────────────────
-        self.dashboard = DashboardServer(self)
+        self.dashboard = DashboardServer(self, host="0.0.0.0", port=8080)
         await self.dashboard.start()
 
         # ── 14. Connect & Start ───────────────────────────────────────────────
@@ -391,8 +464,8 @@ class Application:
         logger.info(f"Timeframes: {timeframes}s")
 
     def set_trading_mode(self, mode: str) -> None:
-        """Hot-swap the active trading mode (standard, scalping, or differs)."""
-        if mode not in ("standard", "scalping", "differs"):
+        """Hot-swap the active trading mode (standard, scalping, differs, or holy_grail)."""
+        if mode not in ("standard", "scalping", "differs", "holy_grail"):
             logger.warning(f"Attempted to set unknown trading mode: {mode}")
             return
             
@@ -413,6 +486,10 @@ class Application:
             self.risk_engine = self.differs_risk_engine
             self.strategy_engine = self.differs_strategy_engine
             logger.success("[Application] Mode switched to DIFFERS (Adaptive Digit Analyzer)")
+        elif mode == "holy_grail":
+            self.risk_engine = self.holy_grail_risk_engine
+            self.strategy_engine = self.holy_grail_strategy_engine
+            logger.success("[Application] Mode switched to HOLY GRAIL (Skip-1 Differ Bot)")
             
         if self.alert_manager:
             self.alert_manager.system(f"Trading mode switched to: {mode.upper()}")
@@ -500,11 +577,13 @@ class Application:
                 )
             )
 
-        # Tick-level strategy routing for the Differs engine
-        if self.trading_mode == "differs" and self.strategy_engine:
+        # Tick-level strategy routing for the Differs engines
+        if self.trading_mode in ("differs", "holy_grail") and self.strategy_engine:
             asyncio.create_task(self.strategy_engine.on_tick(tick))
-            if self.differs_risk_engine:
+            if self.trading_mode == "differs" and self.differs_risk_engine:
                 self.differs_risk_engine.on_tick()
+            elif self.trading_mode == "holy_grail" and self.holy_grail_risk_engine:
+                self.holy_grail_risk_engine.on_tick()
 
     async def _on_candle_completed(self, candle: Candle) -> None:
         """Candle from the builder → update portfolio ATR, forward to autopilot."""
