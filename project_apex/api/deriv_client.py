@@ -328,6 +328,9 @@ class DerivClient(MarketDataProvider):
         delay = self._initial_delay
         attempts = 0
 
+        # Reset state by disconnecting the old socket
+        await self._ws.disconnect()
+
         while attempts < self._max_attempts:
             try:
                 logger.info(f"Reconnecting attempt {attempts + 1}/{self._max_attempts} after {delay}s...")
