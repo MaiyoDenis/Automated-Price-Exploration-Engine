@@ -20,7 +20,9 @@ def mock_config():
     config._config = {
         "api": {
             "websocket_url": "wss://ws.binaryws.com/websockets/v3",
+            "rest_url": "https://api.derivws.com",
             "app_id": "1089",
+            "account_type": "demo",
             "heartbeat_interval": 30,
             "heartbeat_timeout": 10,
             "reconnect_max_attempts": 3,
@@ -66,7 +68,9 @@ async def test_connect_sets_is_connected_true(client, mock_ws_manager):
         f.cancel()
         return f
 
-    with patch("asyncio.create_task", side_effect=_close_coro):
+    with patch.object(client, "_fetch_otp_url", new=AsyncMock(return_value="wss://fake.url")), \
+         patch.object(client, "_authorize", new=AsyncMock()), \
+         patch("asyncio.create_task", side_effect=_close_coro):
         await client.connect()
         assert client.is_connected is True
         mock_ws_manager.connect.assert_called_once()
@@ -82,7 +86,9 @@ async def test_disconnect_sets_is_connected_false(client, mock_ws_manager):
         f.cancel()
         return f
 
-    with patch("asyncio.create_task", side_effect=_close_coro):
+    with patch.object(client, "_fetch_otp_url", new=AsyncMock(return_value="wss://fake.url")), \
+         patch.object(client, "_authorize", new=AsyncMock()), \
+         patch("asyncio.create_task", side_effect=_close_coro):
         await client.connect()
 
     mock_ws_manager.state = ConnectionState.DISCONNECTED
@@ -101,11 +107,13 @@ async def test_disconnect_idempotent(client, mock_ws_manager):
 @pytest.mark.asyncio
 async def test_reconnect_attempts_with_backoff(client, mock_ws_manager):
     mock_ws_manager.connect.side_effect = Exception("Connection error")
-    
-    with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+
+    with patch.object(client, "_fetch_otp_url", new=AsyncMock(return_value="wss://fake.url")), \
+         patch.object(client, "_authorize", new=AsyncMock()), \
+         patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
         with pytest.raises(ConnectionFailedError):
             await client._reconnect_loop()
-            
+
         # Should have tried max_attempts times (3)
         assert mock_ws_manager.connect.call_count == 3
         # Should have slept 3 times
@@ -124,7 +132,9 @@ async def test_reconnect_success_resets_counter(client, mock_ws_manager):
     mock_ws_manager.connect.side_effect = [Exception("Error"), None]
     mock_ws_manager.state = ConnectionState.CONNECTED
 
-    with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep, \
+    with patch.object(client, "_fetch_otp_url", new=AsyncMock(return_value="wss://fake.url")), \
+         patch.object(client, "_authorize", new=AsyncMock()), \
+         patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep, \
          patch("asyncio.create_task") as mock_create_task:
         await client._reconnect_loop()
 
