@@ -32,7 +32,7 @@ class DiffersRiskEngine:
         loss_cooldown_ticks: int = 5,
         # Two-tier staking
         base_stake: float = 2.0,               # Normal trade stake
-        recovery_stake: float = 22.0,          # Recovery stake after 1 loss
+        recovery_multiplier: float = 11.0,     # Recovery multiplier after 1 loss
         recovery_min_confidence: float = 0.80, # Min signal confidence to fire recovery trade
         max_consecutive_losses: int = 2,        # Halt after this many losses in a row
         payout_ratio: float = 0.097,           # ~9.7% payout on differs
@@ -50,7 +50,7 @@ class DiffersRiskEngine:
         self.max_daily_loss_pct = max_daily_loss_pct
         self.loss_cooldown_ticks = loss_cooldown_ticks
         self.base_stake = base_stake
-        self.recovery_stake = recovery_stake
+        self.recovery_multiplier = recovery_multiplier
         self.recovery_min_confidence = recovery_min_confidence
         self.max_consecutive_losses = max_consecutive_losses
         self.payout_ratio = payout_ratio
@@ -71,6 +71,7 @@ class DiffersRiskEngine:
 
         self.cooldown_ticks_remaining: int = 0
         self.consecutive_losses: int = 0
+        self.pattern_consecutive_losses: dict[Any, int] = {}
 
         # Regime tracking
         self._recent_results: deque = deque(maxlen=regime_window)
@@ -83,7 +84,7 @@ class DiffersRiskEngine:
 
         logger.info(
             f"[DiffersRiskEngine] Initialized | "
-            f"base=${base_stake} recovery=${recovery_stake} "
+            f"base=${base_stake} recovery_mult={recovery_multiplier}x "
             f"recovery_min_conf={recovery_min_confidence:.0%} "
             f"max_consec_losses={max_consecutive_losses} "
             f"cooldown={loss_cooldown_ticks}t daily_loss={max_daily_loss_pct:.0%}"
@@ -118,31 +119,43 @@ class DiffersRiskEngine:
         self._trading_halt = False
         self._halt_reason = ""
         self.consecutive_losses = 0
+        self.pattern_consecutive_losses.clear()
         logger.info("[DiffersRiskEngine] Trading RESUMED")
 
     # ── Trade result feedback ──────────────────────────────────────────────
 
-    def on_trade_result(self, won: bool) -> None:
+    def on_trade_result(self, won: bool, order: TradeOrder | None = None) -> None:
         """Update state after each settled contract."""
         self._recent_results.append(won)
 
+        pattern = "DEFAULT"
+        if order and order.metadata and "pattern" in order.metadata:
+            pattern = order.metadata["pattern"]
+
         if won:
             self.consecutive_losses = 0
+            self.pattern_consecutive_losses[pattern] = 0
             self.cooldown_ticks_remaining = 0
-            logger.info("[DiffersRiskEngine] Win. Consecutive losses reset to 0.")
+            logger.info(f"[DiffersRiskEngine] Win. Consecutive losses reset to 0 (Pattern: {pattern}).")
         else:
             self.consecutive_losses += 1
+            
+            if pattern not in self.pattern_consecutive_losses:
+                self.pattern_consecutive_losses[pattern] = 0
+            self.pattern_consecutive_losses[pattern] += 1
+
             self.cooldown_ticks_remaining = self.loss_cooldown_ticks
             logger.warning(
-                f"[DiffersRiskEngine] Loss #{self.consecutive_losses}. "
+                f"[DiffersRiskEngine] Loss #{self.consecutive_losses} globally, "
+                f"#{self.pattern_consecutive_losses[pattern]} for pattern {pattern}. "
                 f"Cooldown for {self.loss_cooldown_ticks} ticks."
             )
 
-            if self.consecutive_losses >= self.max_consecutive_losses:
-                self.halt_trading(
-                    f"{self.consecutive_losses} consecutive losses — session halted to protect capital. "
-                    f"Call resume_trading() to restart."
-                )
+#             if self.consecutive_losses >= self.max_consecutive_losses:
+#                 self.halt_trading(
+#                     f"{self.consecutive_losses} consecutive losses — session halted to protect capital. "
+#                     f"Call resume_trading() to restart."
+#                 )
 
     def on_tick(self) -> None:
         """Decrement cooldown on every tick."""
@@ -214,8 +227,11 @@ class DiffersRiskEngine:
             return RiskDecision(approved=False, reason="Already in a digit trade")
 
         # Rule 5: Determine stake based on loss state and regime
+        pattern = signal.metadata.get("pattern", "DEFAULT") if signal.metadata else "DEFAULT"
+        pattern_losses = self.pattern_consecutive_losses.get(pattern, 0)
+        
         regime = self._get_regime()
-        is_recovery = self.consecutive_losses == 1
+        is_recovery = pattern_losses == 1
 
         if is_recovery:
             # Recovery trade — only fire if confidence is high enough AND regime not cold
@@ -233,7 +249,7 @@ class DiffersRiskEngine:
                 )
                 return RiskDecision(approved=False, reason="HOLD")
 
-            stake = self.recovery_stake
+            stake = self.base_stake * self.recovery_multiplier
             trade_type = "RECOVERY"
         else:
             # Normal trade — base stake
