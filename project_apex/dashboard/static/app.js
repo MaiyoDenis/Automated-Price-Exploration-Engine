@@ -173,6 +173,10 @@ async function loadSettings() {
             document.getElementById('dif_martingale_multiplier').value = data.differs.martingale_multiplier;
             document.getElementById('dif_martingale_max_steps').value = data.differs.martingale_max_steps;
         }
+        // Holy Grail
+        if (data.holy_grail) {
+            document.getElementById('hg_base_stake').value = data.holy_grail.base_stake;
+        }
     } catch (e) { console.error('Failed to load settings', e); }
 }
 
@@ -197,6 +201,8 @@ async function saveSettings(mode) {
         params.martingale_enabled = document.getElementById('dif_martingale_enabled').classList.contains('active');
         params.martingale_multiplier = parseFloat(document.getElementById('dif_martingale_multiplier').value);
         params.martingale_max_steps = parseInt(document.getElementById('dif_martingale_max_steps').value);
+    } else if (mode === 'holy_grail') {
+        params.base_stake = parseFloat(document.getElementById('hg_base_stake').value);
     }
     
     try {
@@ -229,6 +235,7 @@ function selectStrategy(strategy) {
     const stdCard  = document.getElementById('sc-standard');
     const scalpCard = document.getElementById('sc-scalping');
     const differsCard = document.getElementById('sc-differs');
+    const holyGrailCard = document.getElementById('sc-holy_grail');
     const btn = document.getElementById('scan-trade-btn');
     const tag = document.getElementById('active-strategy-tag');
     const pill = document.getElementById('engine-pill');
@@ -248,6 +255,7 @@ function selectStrategy(strategy) {
     stdCard.classList.remove('active');
     scalpCard.classList.remove('active', 'scalping');
     if(differsCard) differsCard.classList.remove('active', 'differs');
+    if(holyGrailCard) holyGrailCard.classList.remove('active', 'holy_grail');
 
     if (strategy === 'scalping') {
         scalpCard.classList.add('active', 'scalping');
@@ -265,6 +273,14 @@ function selectStrategy(strategy) {
         pill.className = 'engine-pill differs';
         pillIcon.textContent = '🎯';
         pillName.textContent = 'Differs — Digit Predictor';
+    } else if (strategy === 'holy_grail') {
+        if(holyGrailCard) holyGrailCard.classList.add('active', 'holy_grail');
+        btn.classList.add('holy_grail-mode');
+        btn.classList.remove('scanning', 'scalping-mode', 'differs-mode');
+        tag.innerHTML = '<span class="ast-dot" style="background:#F59E0B;box-shadow:0 0 8px #F59E0B;"></span> Holy Grail Mode Active';
+        pill.className = 'engine-pill holy_grail';
+        pillIcon.textContent = '🏆';
+        pillName.textContent = 'Holy Grail — Skip-1 Differ Bot';
     } else {
         stdCard.classList.add('active');
         btn.classList.remove('scalping-mode', 'differs-mode');

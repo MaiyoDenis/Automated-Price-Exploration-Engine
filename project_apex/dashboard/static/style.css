@@ -912,3 +912,13 @@ body {
     .ai-page-grid { grid-template-columns: 1fr; }
     .history-summary-grid { grid-template-columns: repeat(2, 1fr); }
 }
+
+.strategy-card.active.holy_grail {
+    border: 1px solid #F59E0B;
+    box-shadow: 0 0 15px rgba(245, 158, 11, 0.1);
+}
+
+button.scan-trade-btn.holy_grail-mode {
+    background: linear-gradient(135deg, #F59E0B, #D97706);
+    box-shadow: 0 0 20px rgba(245, 158, 11, 0.4);
+}

@@ -225,8 +225,8 @@ class DashboardServer:
         try:
             data = await request.json()
             mode = data.get("mode")
-            if mode not in ("standard", "scalping", "differs"):
-                return await self._json({"error": "Invalid mode. Must be 'standard', 'scalping', or 'differs'."})
+            if mode not in ("standard", "scalping", "differs", "holy_grail"):
+                return await self._json({"error": "Invalid mode. Must be 'standard', 'scalping', 'differs', or 'holy_grail'."})
             
             if hasattr(self.app_core, "set_trading_mode"):
                 self.app_core.set_trading_mode(mode)
@@ -264,7 +264,7 @@ class DashboardServer:
 
     async def handle_get_trading_params(self, request: web.Request) -> web.Response:
         """Return current trading parameters for all modes."""
-        params = {"differs": {}, "scalping": {}, "standard": {}}
+        params = {"differs": {}, "scalping": {}, "standard": {}, "holy_grail": {}}
 
         dre = getattr(self.app_core, "differs_risk_engine", None)
         if dre:
@@ -298,6 +298,12 @@ class DashboardServer:
                 "max_daily_loss_pct": stdre.max_daily_loss_pct,
                 "min_confidence": stdre.min_confidence,
             }
+            
+        hgre = getattr(self.app_core, "holy_grail_risk_engine", None)
+        if hgre:
+            params["holy_grail"] = {
+                "base_stake": hgre.base_stake,
+            }
 
         return await self._json(params)
 
@@ -308,8 +314,8 @@ class DashboardServer:
             mode = data.get("mode")
             params = data.get("params", {})
 
-            if mode not in ("differs", "scalping", "standard"):
-                return await self._json({"error": "Invalid mode"})
+            if mode not in ("differs", "scalping", "standard", "holy_grail"):
+                return await self._json({"error": "Invalid mode. Must be 'standard', 'scalping', 'differs', or 'holy_grail'."})
 
             if mode == "differs":
                 engine = getattr(self.app_core, "differs_risk_engine", None)
@@ -325,19 +331,47 @@ class DashboardServer:
                     if key in params:
                         setattr(engine, key, cast(params[key]))
 
-            elif mode in ("scalping", "standard"):
-                attr = "scalping_risk_engine" if mode == "scalping" else "standard_risk_engine"
-                engine = getattr(self.app_core, attr, None)
+            elif mode == "scalping":
+                engine = getattr(self.app_core, "scalping_risk_engine", None)
                 if not engine:
-                    return await self._json({"error": f"{mode} risk engine not initialized"})
+                    return await self._json({"error": "Scalping risk engine not initialized"})
+                _STD_FIELDS = {
+                    "risk_per_trade_pct": float, "atr_stop_multiplier": float,
+                    "atr_tp_multiplier": float, "max_open_positions": int,
+                    "max_daily_loss_pct": float,
+                }
+                for k, cast_fn in _STD_FIELDS.items():
+                    if k in params:
+                        try:
+                            setattr(engine, k, cast_fn(params[k]))
+                        except (ValueError, TypeError):
+                            pass
+
+            elif mode == "standard":
+                engine = getattr(self.app_core, "standard_risk_engine", None)
+                if not engine:
+                    return await self._json({"error": "Standard risk engine not initialized"})
                 _STD_FIELDS = {
                     "risk_per_trade_pct": float, "atr_stop_multiplier": float,
                     "atr_tp_multiplier": float, "max_open_positions": int,
                     "max_daily_loss_pct": float, "min_confidence": float,
                 }
-                for key, cast in _STD_FIELDS.items():
-                    if key in params:
-                        setattr(engine, key, cast(params[key]))
+                for k, cast_fn in _STD_FIELDS.items():
+                    if k in params:
+                        try:
+                            setattr(engine, k, cast_fn(params[k]))
+                        except (ValueError, TypeError):
+                            pass
+                            
+            elif mode == "holy_grail":
+                engine = getattr(self.app_core, "holy_grail_risk_engine", None)
+                if not engine:
+                    return await self._json({"error": "Holy Grail risk engine not initialized"})
+                if "base_stake" in params:
+                    try:
+                        engine.base_stake = float(params["base_stake"])
+                    except (ValueError, TypeError):
+                        pass
 
             logger.info(f"[DashboardServer] Trading params updated for {mode}: {params}")
             return await self._json({"status": "success", "mode": mode})

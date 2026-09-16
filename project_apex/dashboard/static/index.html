@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/style.css?v=2">
 </head>
 <body>
     <div class="app-container">
@@ -116,6 +116,14 @@
                                 </div>
                                 <div class="sc-check" id="check-differs">✓</div>
                             </div>
+                            <div class="strategy-card" id="sc-holy_grail" onclick="selectStrategy('holy_grail')">
+                                <div class="sc-icon">🏆</div>
+                                <div class="sc-info">
+                                    <div class="sc-name">Holy Grail</div>
+                                    <div class="sc-desc">Skip-1 Differ Bot</div>
+                                </div>
+                                <div class="sc-check" id="check-holy_grail">✓</div>
+                            </div>
                         </div>
 
                         <!-- ═══ Strategy Config Drawer ═══ -->
@@ -205,6 +213,25 @@
                                             <span style="font-size:12px; color:var(--text-secondary)">max steps:</span>
                                             <input type="number" class="form-input" id="dif_martingale_max_steps" step="1" min="1" style="width: 80px;" placeholder="4">
                                         </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Holy Grail Config -->
+                            <div class="config-panel" id="config-panel-holy_grail">
+                                <div class="config-panel-header">
+                                    <div class="config-panel-title"><span class="config-dot differs-dot" style="background:#F59E0B"></span> Holy Grail Settings</div>
+                                    <button class="config-save-btn" onclick="saveSettings('holy_grail')">Apply Changes</button>
+                                </div>
+                                <div class="config-grid">
+                                    <div class="form-group">
+                                        <label class="form-label">Base Stake ($)</label>
+                                        <input type="number" class="form-input" id="hg_base_stake" step="0.1" min="0.35" value="1.0">
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="form-label">Recovery Multiplier</label>
+                                        <input type="number" class="form-input" id="hg_recovery_multiplier" step="1" min="1" value="11" disabled>
+                                        <div class="form-hint">Locked (11x for single loss)</div>
                                     </div>
                                 </div>
                             </div>
@@ -451,6 +478,6 @@
         </main>
     </div>
 
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=3"></script>
 </body>
 </html>
