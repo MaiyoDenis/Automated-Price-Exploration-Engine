@@ -2,7 +2,9 @@
  * Project APEX — Dashboard Client Logic
  */
 
-const API_BASE = 'http://127.0.0.1:8080/api';
+const API_BASE = window.location.pathname.includes('/apex')
+    ? `${window.location.origin}/apex/api`
+    : `${window.location.origin}/api`;
 
 // ─── State ────────────────────────────────────────────────────────────────────
 let currentAccount = 'demo';
@@ -229,7 +231,7 @@ async function saveSettings(mode) {
     }
 }
 
-function selectStrategy(strategy) {
+function selectStrategy(strategy, openDrawer = false) {
     currentStrategy = strategy;
 
     const stdCard  = document.getElementById('sc-standard');
@@ -244,11 +246,13 @@ function selectStrategy(strategy) {
     
     // Config Drawer
     const drawer = document.getElementById('config-drawer');
-    document.querySelectorAll('.config-panel').forEach(p => p.classList.remove('active'));
-    document.getElementById(`config-panel-${strategy}`).classList.add('active');
+    const panel = document.getElementById(`config-panel-${strategy}`);
+    if (panel) {
+        document.querySelectorAll('.config-panel').forEach(p => p.classList.remove('active'));
+        panel.classList.add('active');
+    }
     
-    // If not open, open it
-    if (!drawer.classList.contains('open')) {
+    if (openDrawer && drawer && !drawer.classList.contains('open')) {
         drawer.classList.add('open');
     }
 
@@ -494,8 +498,7 @@ async function fetchStatus() {
         // Sync mode if changed remotely
         const backendMode = data.trading_mode || 'standard';
         if (backendMode !== currentStrategy && !isScanning) {
-            selectStrategy(backendMode);
-            document.getElementById('config-drawer').classList.remove('open');
+            selectStrategy(backendMode, false);
         }
 
         // Active symbols

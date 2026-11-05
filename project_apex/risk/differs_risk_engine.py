@@ -29,17 +29,20 @@ class DiffersRiskEngine:
     def __init__(
         self,
         max_daily_loss_pct: float = 0.05,
-        loss_cooldown_ticks: int = 5,
+        loss_cooldown_ticks: int = 30,        # Cooldown 30 ticks (60s) after a loss
         # Two-tier staking
         base_stake: float = 2.0,               # Normal trade stake
         recovery_multiplier: float = 11.0,     # Recovery multiplier after 1 loss
         recovery_min_confidence: float = 0.80, # Min signal confidence to fire recovery trade
+        recovery_min_drought: int = 8,         # Min drought for recovery trade target digit
+        ban_lost_digit_on_recovery: bool = True, # Forbid recovery on the same digit that just failed
         max_consecutive_losses: int = 2,        # Halt after this many losses in a row
         payout_ratio: float = 0.097,           # ~9.7% payout on differs
         # Regime detection
         regime_window: int = 10,
         hot_streak_threshold: float = 0.85,
         cold_streak_threshold: float = 0.70,
+        use_pattern_recovery: bool = False,   # If True, recovery only fires on same pattern; if False, fires on very next trade after loss
         # Legacy / unused but kept for dashboard compatibility
         kelly_fraction: float = 0.0,
         max_stake: float = 50.0,
@@ -52,11 +55,14 @@ class DiffersRiskEngine:
         self.base_stake = base_stake
         self.recovery_multiplier = recovery_multiplier
         self.recovery_min_confidence = recovery_min_confidence
+        self.recovery_min_drought = recovery_min_drought
+        self.ban_lost_digit_on_recovery = ban_lost_digit_on_recovery
         self.max_consecutive_losses = max_consecutive_losses
         self.payout_ratio = payout_ratio
         self.regime_window = regime_window
         self.hot_streak_threshold = hot_streak_threshold
         self.cold_streak_threshold = cold_streak_threshold
+        self.use_pattern_recovery = use_pattern_recovery
         # Legacy compatibility
         self.kelly_fraction = kelly_fraction
         self.max_stake = max_stake
@@ -72,6 +78,7 @@ class DiffersRiskEngine:
         self.cooldown_ticks_remaining: int = 0
         self.consecutive_losses: int = 0
         self.pattern_consecutive_losses: dict[Any, int] = {}
+        self.last_lost_digit: int | None = None
 
         # Regime tracking
         self._recent_results: deque = deque(maxlen=regime_window)
@@ -136,6 +143,7 @@ class DiffersRiskEngine:
             self.consecutive_losses = 0
             self.pattern_consecutive_losses[pattern] = 0
             self.cooldown_ticks_remaining = 0
+            self.last_lost_digit = None
             logger.info(f"[DiffersRiskEngine] Win. Consecutive losses reset to 0 (Pattern: {pattern}).")
         else:
             self.consecutive_losses += 1
@@ -144,10 +152,14 @@ class DiffersRiskEngine:
                 self.pattern_consecutive_losses[pattern] = 0
             self.pattern_consecutive_losses[pattern] += 1
 
+            if order and order.metadata and "barrier" in order.metadata:
+                self.last_lost_digit = order.metadata["barrier"]
+
             self.cooldown_ticks_remaining = self.loss_cooldown_ticks
             logger.warning(
                 f"[DiffersRiskEngine] Loss #{self.consecutive_losses} globally, "
-                f"#{self.pattern_consecutive_losses[pattern]} for pattern {pattern}. "
+                f"#{self.pattern_consecutive_losses[pattern]} for pattern {pattern} "
+                f"(Lost digit: {self.last_lost_digit}). "
                 f"Cooldown for {self.loss_cooldown_ticks} ticks."
             )
 
@@ -231,23 +243,52 @@ class DiffersRiskEngine:
         pattern_losses = self.pattern_consecutive_losses.get(pattern, 0)
         
         regime = self._get_regime()
-        is_recovery = pattern_losses == 1
+        if self.use_pattern_recovery:
+            if pattern_losses >= self.max_consecutive_losses:
+                logger.warning(
+                    f"[DiffersRiskEngine] Pattern {pattern} exceeded max recovery losses ({pattern_losses}). "
+                    f"Resetting pattern losses to 0 and reverting to base stake."
+                )
+                self.pattern_consecutive_losses[pattern] = 0
+                pattern_losses = 0
+            is_recovery = pattern_losses == 1
+        else:
+            is_recovery = self.consecutive_losses >= 1
 
         if is_recovery:
-            # Recovery trade — only fire if confidence is high enough AND regime not cold
+            # Recovery trade — safety checks
             if regime == "cold":
                 logger.warning(
                     f"[DiffersRiskEngine] COLD regime + recovery trade — skipping. "
                     f"Waiting for conditions to improve."
                 )
-                return RiskDecision(approved=False, reason="HOLD")
+                return RiskDecision(approved=False, reason="HOLD_COLD_REGIME")
+
+            # Check 1: Ban lost digit on recovery
+            if self.ban_lost_digit_on_recovery and self.last_lost_digit is not None:
+                if signal.barrier == self.last_lost_digit:
+                    logger.warning(
+                        f"[DiffersRiskEngine] Recovery trade blocked | barrier {signal.barrier} "
+                        f"matches last lost digit {self.last_lost_digit}. Waiting for a different digit."
+                    )
+                    return RiskDecision(approved=False, reason="HOLD_BANNED_LOST_DIGIT")
+
+            # Check 2: Drought confirmation for recovery trade
+            drought = signal.metadata.get("drought") if signal.metadata else None
+            if self.recovery_min_drought > 0 and drought is not None:
+                if drought < self.recovery_min_drought:
+                    logger.info(
+                        f"[DiffersRiskEngine] Recovery trade waiting for cold confirmation: "
+                        f"digit {signal.barrier} drought={drought} < {self.recovery_min_drought} required."
+                    )
+                    return RiskDecision(approved=False, reason="HOLD_RECOVERY_DROUGHT")
 
             if signal.confidence < self.recovery_min_confidence:
                 logger.info(
                     f"[DiffersRiskEngine] Recovery trade waiting for confidence "
                     f"{signal.confidence:.3f} < {self.recovery_min_confidence:.2f} required."
                 )
-                return RiskDecision(approved=False, reason="HOLD")
+                return RiskDecision(approved=False, reason="HOLD_CONFIDENCE")
 
             stake = self.base_stake * self.recovery_multiplier
             trade_type = "RECOVERY"
@@ -259,8 +300,8 @@ class DiffersRiskEngine:
         size = round(stake, 2)
 
         logger.info(
-            f"[DiffersRiskEngine] {trade_type} trade | regime={regime} | "
-            f"consec_losses={self.consecutive_losses} | "
+            f"[DiffersRiskEngine] {trade_type} trade (Pattern: {pattern}, Pattern Losses: {pattern_losses}) | "
+            f"regime={regime} | consec_losses={self.consecutive_losses} | "
             f"conf={signal.confidence:.3f} | stake=${size:.2f}"
         )
 

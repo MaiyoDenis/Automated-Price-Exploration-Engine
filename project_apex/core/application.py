@@ -109,7 +109,7 @@ class Application:
         self.health_monitor: Optional[HealthMonitor] = None
         self.dashboard: Optional[DashboardServer] = None
         
-        self.trading_mode: str = "standard"
+        self.trading_mode: str = str(self.config.get("trading", "mode") or "standard")
         self.standard_risk_engine: Optional[RiskEngine] = None
         self.scalping_risk_engine: Optional[RiskEngine] = None
         self.standard_strategy_engine: Optional[StrategyEngine] = None
@@ -304,12 +304,15 @@ class Application:
         # ── 6d. Holy Grail Engine ─────────────────────────────────────────────
         self.holy_grail_risk_engine = DiffersRiskEngine(
             max_daily_loss_pct=float(self.config.get("risk", "max_daily_loss_pct") or 0.05),
-            loss_cooldown_ticks=0,             # No cooldown for Holy Grail
+            loss_cooldown_ticks=0,             # 0-tick cooldown (trades immediately)
+            recovery_min_drought=0,            # 0 minimum drought (takes recovery immediately)
+            ban_lost_digit_on_recovery=False,  # Do NOT block recovery trades even if barrier matches lost digit
             base_stake=1.0,                    # Base stake $1
             recovery_multiplier=11.0,          # 11x Martingale
             recovery_min_confidence=0.50,      # Holy grail always has 0.99
             max_consecutive_losses=2,          # Halt session after 2 losses
             payout_ratio=0.09,                 # ~9% payout
+            use_pattern_recovery=True,         # Only the specific pattern that lost fires 11x recovery; others continue base stake
         )
         
         _hg_strategy_ref: list = []

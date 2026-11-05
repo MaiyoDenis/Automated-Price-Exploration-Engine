@@ -145,6 +145,24 @@ class HealthMonitor:
             for c in bad:
                 level = logger.warning if c.status == HealthStatus.YELLOW else logger.error
                 level(f"[HealthMonitor] {c.status.value} — {c.name}: {c.message}")
+
+            # Watchdog recovery: if broker disconnected or data freshness is critically stale
+            if self._app.deriv_client is not None:
+                freshness_check = next((c for c in checks if c.name == "data_freshness"), None)
+                if freshness_check and freshness_check.status == HealthStatus.RED and freshness_check.value is not None:
+                    age = freshness_check.value
+                    if age >= 180.0:
+                        logger.warning(
+                            f"[HealthMonitor] Watchdog: No ticks for {age:.0f}s. Triggering client reconnection."
+                        )
+                        self._app.deriv_client._trigger_reconnect()
+                    if age >= 600.0:
+                        logger.critical(
+                            f"[HealthMonitor] Watchdog timeout: No ticks for {age:.0f}s. "
+                            f"Terminating process to trigger systemd auto-restart..."
+                        )
+                        import os, signal
+                        os.kill(os.getpid(), signal.SIGTERM)
         else:
             logger.debug("[HealthMonitor] All checks GREEN ✅")
 

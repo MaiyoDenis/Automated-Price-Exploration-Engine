@@ -64,6 +64,7 @@ differs:
 
 # Trading / Execution configuration
 trading:
+  mode: standard                 # Options: "standard", "differs", "holy_grail"
   paper_trading: false           # Set to false when live API token is provided
   initial_capital: 10000.0       # Starting paper balance
   slippage_pct: 0.0001           # Simulated slippage (0.01%)

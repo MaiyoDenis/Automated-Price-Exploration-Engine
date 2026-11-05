@@ -31,11 +31,13 @@ class WebSocketManager:
     @property
     def state(self) -> ConnectionState:
         """Returns the current connection state."""
+        if self.connection is None or getattr(self.connection, "closed", False) is True:
+            self._state = ConnectionState.DISCONNECTED
         return self._state
 
     async def connect(self) -> None:
         """Connect to the WebSocket server with a timeout."""
-        if self._state == ConnectionState.CONNECTED:
+        if self._state == ConnectionState.CONNECTED and self.connection and getattr(self.connection, "closed", False) is not True:
             return
 
         self._state = ConnectionState.CONNECTING
@@ -43,7 +45,11 @@ class WebSocketManager:
 
         try:
             async with asyncio.timeout(self.connect_timeout):
-                self.connection = await websockets.connect(self.url)
+                self.connection = await websockets.connect(
+                    self.url,
+                    ping_interval=30,
+                    ping_timeout=30,
+                )
             self._state = ConnectionState.CONNECTED
             logger.success("WebSocket connected successfully.")
         except Exception:
@@ -53,7 +59,10 @@ class WebSocketManager:
     async def disconnect(self) -> None:
         """Close the WebSocket connection."""
         if self.connection is not None:
-            await self.connection.close()
+            try:
+                await self.connection.close()
+            except Exception:
+                pass
             self.connection = None
 
         self._state = ConnectionState.DISCONNECTED
@@ -61,18 +70,28 @@ class WebSocketManager:
 
     async def send(self, message: dict) -> None:
         """Send a JSON message."""
-        if self.connection is None or self._state != ConnectionState.CONNECTED:
+        if self.connection is None or self._state != ConnectionState.CONNECTED or getattr(self.connection, "closed", False) is True:
+            self._state = ConnectionState.DISCONNECTED
             raise RuntimeError("WebSocket is not connected.")
 
-        await self.connection.send(json.dumps(message))
+        try:
+            await self.connection.send(json.dumps(message))
+        except Exception:
+            self._state = ConnectionState.DISCONNECTED
+            raise
 
     async def receive(self) -> dict:
         """Receive a JSON message."""
-        if self.connection is None or self._state != ConnectionState.CONNECTED:
+        if self.connection is None or self._state != ConnectionState.CONNECTED or getattr(self.connection, "closed", False) is True:
+            self._state = ConnectionState.DISCONNECTED
             raise RuntimeError("WebSocket is not connected.")
 
-        response = await self.connection.recv()
-        return json.loads(response)
+        try:
+            response = await self.connection.recv()
+            return json.loads(response)
+        except Exception:
+            self._state = ConnectionState.DISCONNECTED
+            raise
 
     async def __aenter__(self) -> WebSocketManager:
         await self.connect()

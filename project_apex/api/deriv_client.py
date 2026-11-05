@@ -103,29 +103,29 @@ class DerivClient(MarketDataProvider):
 
     async def _authorize(self) -> None:
         """
-        Send the authorize message and wait for its response.
+        Confirm authenticated connection and retrieve account info.
 
-        This MUST be called after every (re)connect before any trading calls.
-        Without it, proposal/buy/sell return AuthorizationRequired errors.
+        Because connection is made via an OTP WebSocket URL, the session is already
+        authenticated at the handshake. Sending a legacy 'authorize' request returns
+        'UnknownMethod'. Instead, we query 'balance' to verify the stream and fetch
+        the active loginid and balance.
         """
-        try:
-            account_type = self._config.get("api", "account_type") or "demo"
-        except Exception:
-            account_type = "demo"
-
-        token = self._env.demo_token if account_type == "demo" else self._env.real_token
-
-        req = self._builder.authorize(token)
+        req = self._builder.balance()
         response = await self.send_request(req)
-        account_info = response.get("authorize", {})
+        account_info = response.get("balance", {})
         logger.success(
-            f"[DerivClient] Authorized | account={account_info.get('loginid', '?')} "
+            f"[DerivClient] Authenticated | account={account_info.get('loginid', '?')} "
             f"balance={account_info.get('balance', '?')} {account_info.get('currency', '')}"
         )
 
     @property
     def is_connected(self) -> bool:
-        return self._ws.state == ConnectionState.CONNECTED
+        if self._ws is None or self._ws.state != ConnectionState.CONNECTED:
+            return False
+        conn = getattr(self._ws, "connection", None)
+        if conn is not None and getattr(conn, "closed", False) is True:
+            return False
+        return True
 
     async def connect(self) -> None:
         """Connect the WebSocket and authorize before returning."""
@@ -254,6 +254,22 @@ class DerivClient(MarketDataProvider):
 
     # ── Internal loops ────────────────────────────────────────────────────────
 
+    def _trigger_reconnect(self) -> None:
+        """Trigger the reconnection loop if not already running."""
+        if self._reconnect_task is None or self._reconnect_task.done():
+            self._reconnect_task = asyncio.create_task(self._reconnect_loop())
+            self._reconnect_task.add_done_callback(self._on_reconnect_task_done)
+
+    def _on_reconnect_task_done(self, task: asyncio.Task) -> None:
+        """Handle completion of the reconnect task. If it crashed/exhausted, terminate to trigger systemd restart."""
+        if not task.cancelled() and task.exception():
+            logger.critical(
+                f"[DerivClient] Reconnection task failed with unrecoverable error: {task.exception()}. "
+                f"Terminating process to trigger systemd auto-restart..."
+            )
+            import os, signal
+            os.kill(os.getpid(), signal.SIGTERM)
+
     def _start_receive_loop(self) -> None:
         if self._receive_task is None or self._receive_task.done():
             self._receive_task = asyncio.create_task(self._receive_loop())
@@ -271,7 +287,8 @@ class DerivClient(MarketDataProvider):
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.warning(f"Heartbeat failed: {e}")
+                logger.warning(f"Heartbeat failed: {e}. Initiating reconnect.")
+                self._trigger_reconnect()
 
     async def _receive_loop(self) -> None:
         while True:
@@ -321,12 +338,24 @@ class DerivClient(MarketDataProvider):
                 logger.error(f"Deriv API Error: {e.code} - {e.message}")
             except Exception as e:
                 logger.warning(f"WebSocket receive error: {e}. Initiating reconnect.")
-                self._reconnect_task = asyncio.create_task(self._reconnect_loop())
+                self._trigger_reconnect()
                 break
 
     async def _reconnect_loop(self) -> None:
         delay = self._initial_delay
         attempts = 0
+
+        # Cancel any active receive or heartbeat tasks while resetting
+        if self._receive_task is not None and not self._receive_task.done():
+            self._receive_task.cancel()
+        if self._heartbeat_task is not None and not self._heartbeat_task.done():
+            self._heartbeat_task.cancel()
+
+        # Reject any pending RPC requests from the broken connection
+        for fut in list(self._pending_requests.values()):
+            if not fut.done():
+                fut.set_exception(ConnectionResetError("WebSocket connection lost during request"))
+        self._pending_requests.clear()
 
         # Reset state by disconnecting the old socket
         await self._ws.disconnect()
@@ -340,7 +369,11 @@ class DerivClient(MarketDataProvider):
                 self._ws.url = dynamic_url
                 await self._ws.connect()
 
-                # Re-authorize before resubscribing
+                # CRITICAL: Start the receive loop IMMEDIATELY so incoming balance/auth
+                # and tick messages are processed and RPC futures are resolved!
+                self._start_receive_loop()
+
+                # Re-authorize before resubscribing (queries balance to verify authenticated session)
                 await self._authorize()
 
                 # Resubscribe active symbols; clear stale UUIDs so they get
@@ -352,11 +385,15 @@ class DerivClient(MarketDataProvider):
                     await self._ws.send(req)
 
                 logger.success("Reconnected and reauthorized successfully.")
-                self._start_receive_loop()
                 return
 
             except Exception as e:
                 logger.error(f"Reconnect failed: {e}")
+                if self._receive_task is not None and not self._receive_task.done():
+                    self._receive_task.cancel()
+                if self._heartbeat_task is not None and not self._heartbeat_task.done():
+                    self._heartbeat_task.cancel()
+                await self._ws.disconnect()
                 attempts += 1
                 delay = min(delay * 2, self._max_delay)
 
@@ -417,10 +454,7 @@ class DerivClient(MarketDataProvider):
             import websockets
             async with websockets.connect(ws_url) as ws:
                 builder = MessageBuilder()
-                # Authorize first on this temp connection
-                auth_req = builder.authorize(token)
-                await ws.send(json.dumps(auth_req))
-                # Then request balance
+                # Request balance directly (already authenticated via OTP)
                 bal_req = builder.balance()
                 await ws.send(json.dumps(bal_req))
 

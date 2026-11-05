@@ -143,3 +143,44 @@ async def test_reconnect_success_resets_counter(client, mock_ws_manager):
         # Sleep is called once per attempt (before each connect attempt)
         assert mock_sleep.call_count == 2
         # No ConnectionFailedError raised — test passes if we reach here
+
+
+@pytest.mark.asyncio
+async def test_reconnect_starts_receive_loop_before_authorize(client, mock_ws_manager):
+    """Verify that _start_receive_loop is called BEFORE _authorize during reconnect."""
+    call_order = []
+
+    def mock_start_receive():
+        call_order.append("start_receive_loop")
+
+    async def mock_authorize():
+        call_order.append("authorize")
+
+    mock_ws_manager.connect = AsyncMock()
+    mock_ws_manager.state = ConnectionState.CONNECTED
+
+    with patch.object(client, "_fetch_otp_url", new=AsyncMock(return_value="wss://fake.url")), \
+         patch.object(client, "_start_receive_loop", side_effect=mock_start_receive), \
+         patch.object(client, "_authorize", side_effect=mock_authorize), \
+         patch("asyncio.sleep", new_callable=AsyncMock):
+        await client._reconnect_loop()
+
+    assert call_order == ["start_receive_loop", "authorize"]
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_failure_triggers_reconnect(client, mock_ws_manager):
+    """When heartbeat send fails, _trigger_reconnect must be called."""
+    mock_ws_manager.state = ConnectionState.CONNECTED
+    mock_ws_manager.send.side_effect = Exception("keepalive ping timeout")
+
+    with patch.object(client, "_trigger_reconnect") as mock_trigger, \
+         patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        # Let sleep raise CancelledError after first run to exit the infinite loop
+        mock_sleep.side_effect = [None, asyncio.CancelledError()]
+        try:
+            await client._heartbeat_loop()
+        except asyncio.CancelledError:
+            pass
+
+        mock_trigger.assert_called_once()

@@ -45,8 +45,14 @@ build/
 
 # Database files
 *.db
+*.db-shm
+*.db-wal
+*.db.corrupt*
 *.sqlite
 *.sqlite3
+
+# Scratch directory
+scratch/
 
 # Kiro AI workspace
 .kiro/
