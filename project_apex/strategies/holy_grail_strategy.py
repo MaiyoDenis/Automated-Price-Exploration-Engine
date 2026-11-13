@@ -15,8 +15,23 @@ from project_apex.strategies.differs_signal import DifferSignal
 from project_apex.strategies.signals import SignalType
 
 
-# Highly profitable patterns validated on live VPS tick data (>=95% - 100% win rate)
-HOLY_GRAIL_PATTERNS = {
+# Original 5 Holy Grail Patterns
+ORIGINAL_PATTERNS = {
+    (6, 1, 1): 6,
+    (6, 8, 1): 1,
+    (2, 9, 4): 2,
+    (7, 2, 3): 7,
+    (9, 3, 2): 2,
+}
+
+# Strict Filtered Mode Patterns: Retained top historical winners (>= 91% - 96.5% WR)
+STRICT_FILTERED_PATTERNS = {
+    (9, 3, 2): 2,  # Retained original winner (96.55% WR)
+    (7, 2, 3): 7,  # Retained original winner (91.30% WR)
+}
+
+# VPS-validated patterns (>=95% - 100% win rate on live tick data)
+VPS_VALIDATED_PATTERNS = {
     (5, 3, 9): 9,
     (7, 8, 5): 1,
     (1, 1, 8): 2,
@@ -29,8 +44,12 @@ HOLY_GRAIL_PATTERNS = {
     (3, 1, 3): 1,
     (9, 2, 4): 2,
     (2, 9, 1): 4,
-    (9, 3, 2): 2,  # Retained original winner (96.55% WR)
-    (7, 2, 3): 7,  # Retained original winner (91.30% WR)
+}
+
+# Full combined set of all Holy Grail patterns (17 patterns total)
+HOLY_GRAIL_PATTERNS = {
+    **ORIGINAL_PATTERNS,
+    **VPS_VALIDATED_PATTERNS,
 }
 
 
@@ -38,19 +57,38 @@ class HolyGrailStrategy(LiveStrategy):
     """
     Looks for specific 3-tick patterns, waits for 1 dummy tick, 
     and executes a Differs contract on the 5th tick.
+
+    Includes a Virtual Loss filter:
+    Patterns start INACTIVE. When a pattern appears, tick 5 is monitored.
+    If tick 5 would have caused a loss (digit matches barrier), the pattern
+    becomes ACTIVE. On its next appearance, a real trade is placed and the
+    pattern immediately resets to INACTIVE.
     """
     def __init__(self, name: str = "HolyGrail_Skip1", config: Dict[str, Any] = None):
-        super().__init__(name, config)
         self.tick_windows: Dict[str, deque] = {}
         self.droughts: Dict[str, Dict[int, int]] = {}
         self.duration_ticks = 1
-        
-        # Performance tracking
+        self.strict_mode = False
+        self.require_virtual_loss = True
+        self.patterns = HOLY_GRAIL_PATTERNS
+        self.active_patterns: Dict[str, set] = {}
+        self.pending_virtual_checks: Dict[str, list] = {}
         self.recent_trades: Dict[str, list] = {}
+        super().__init__(name, config)
         
     def initialize(self, config: Dict[str, Any]) -> None:
         self.duration_ticks = config.get("duration_ticks", 1)
-        logger.info(f"[{self.name}] Initialized Holy Grail bot.")
+        self.strict_mode = config.get("strict_mode", False) or config.get("filtered_mode", False)
+        self.require_virtual_loss = config.get("require_virtual_loss", True)
+        if self.strict_mode:
+            self.patterns = STRICT_FILTERED_PATTERNS
+            logger.info(f"[{self.name}] Initialized Holy Grail bot in STRICT FILTERED MODE ({len(self.patterns)} patterns).")
+        else:
+            self.patterns = HOLY_GRAIL_PATTERNS
+            logger.info(f"[{self.name}] Initialized Holy Grail bot with all {len(self.patterns)} patterns.")
+
+        if self.require_virtual_loss:
+            logger.info(f"[{self.name}] Virtual Loss Filter ENABLED: real trades only execute after virtual loss confirmation.")
         
     def _get_last_digit(self, price: float) -> int:
         return int(str(price)[-1])
@@ -60,9 +98,37 @@ class HolyGrailStrategy(LiveStrategy):
             self.tick_windows[tick.symbol] = deque(maxlen=4)
             self.droughts[tick.symbol] = {d: 0 for d in range(10)}
             self.recent_trades[tick.symbol] = []
+            self.active_patterns[tick.symbol] = set()
+            self.pending_virtual_checks[tick.symbol] = []
             
-        window = self.tick_windows[tick.symbol]
         digit = self._get_last_digit(tick.price)
+
+        # 1. Evaluate any pending virtual trade checks on tick 5
+        if self.pending_virtual_checks.get(tick.symbol):
+            remaining_checks = []
+            for check in self.pending_virtual_checks[tick.symbol]:
+                check["ticks_remaining"] -= 1
+                if check["ticks_remaining"] <= 0:
+                    pat = check["pattern"]
+                    tgt = check["target_digit"]
+                    if digit == tgt:
+                        # Tick 5 matched barrier -> Virtual trade would have LOST!
+                        self.active_patterns[tick.symbol].add(pat)
+                        logger.info(
+                            f"[{self.name}] ⚡ Virtual loss detected for {tick.symbol} on pattern {pat}! "
+                            f"(Tick 5 digit {digit} matched barrier {tgt}). Pattern is now ACTIVE for next occurrence."
+                        )
+                    else:
+                        logger.debug(
+                            f"[{self.name}] Virtual win for {tick.symbol} on pattern {pat} "
+                            f"(Tick 5 digit {digit} != barrier {tgt}). Pattern remains inactive."
+                        )
+                else:
+                    remaining_checks.append(check)
+            self.pending_virtual_checks[tick.symbol] = remaining_checks
+
+        # 2. Append digit to window & update droughts
+        window = self.tick_windows[tick.symbol]
         window.append(digit)
         
         # Update drought tracking
@@ -72,17 +138,40 @@ class HolyGrailStrategy(LiveStrategy):
             else:
                 self.droughts[tick.symbol][d] += 1
         
+        # 3. Check for pattern match when window has 4 ticks (3 pattern ticks + 1 skipped tick)
         if len(window) == 4:
             t1, t2, t3, t4 = window[0], window[1], window[2], window[3]
             pattern = (t1, t2, t3)
             
-            if pattern in HOLY_GRAIL_PATTERNS:
-                target_digit = HOLY_GRAIL_PATTERNS[pattern]
+            if pattern in self.patterns:
+                target_digit = self.patterns[pattern]
                 target_drought = self.droughts[tick.symbol].get(target_digit, 0)
+                is_active = pattern in self.active_patterns[tick.symbol]
+
+                # If Virtual Loss filter is enabled and pattern is not active yet:
+                if self.require_virtual_loss and not is_active:
+                    logger.info(
+                        f"[{self.name}] ⏳ Pattern Match {t1}->{t2}->{t3} (Ignored: {t4}) for {tick.symbol} [INACTIVE]. "
+                        f"Monitoring next tick for virtual loss against barrier {target_digit}..."
+                    )
+                    self.pending_virtual_checks[tick.symbol].append({
+                        "pattern": pattern,
+                        "target_digit": target_digit,
+                        "ticks_remaining": 1
+                    })
+                    window.clear()
+                    return None
+
+                # Pattern is ACTIVE: Execute real money trade!
                 logger.info(
-                    f"[{self.name}] 🔥 Pattern Match {t1}->{t2}->{t3} (Ignored: {t4}) for {tick.symbol}. "
+                    f"[{self.name}] 🔥 Pattern Match {t1}->{t2}->{t3} (Ignored: {t4}) for {tick.symbol} [ACTIVE]. "
                     f"Executing Differs {target_digit} (drought={target_drought})"
                 )
+                
+                # Reset pattern immediately back to INACTIVE
+                if is_active:
+                    self.active_patterns[tick.symbol].remove(pattern)
+                    logger.info(f"[{self.name}] 🔄 Pattern {pattern} immediately reset to INACTIVE.")
                 
                 # Clear the window to avoid multiple triggers on overlapping patterns
                 window.clear()
@@ -103,6 +192,7 @@ class HolyGrailStrategy(LiveStrategy):
                         "banned_digit": None,
                         "pattern": pattern,
                         "drought": target_drought,
+                        "virtual_loss_confirmed": True,
                     }
                 )
                 
