@@ -50,6 +50,7 @@ build/
 *.db.corrupt*
 *.sqlite
 *.sqlite3
+datasets/*_state.json*
 
 # Scratch directory
 scratch/

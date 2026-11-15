@@ -41,6 +41,7 @@ from project_apex.strategies.meta_strategy import MetaRegimeStrategy
 from project_apex.strategies.scalping import VWAPScalperStrategy
 from project_apex.strategies.differs_strategy import DiffersStrategy
 from project_apex.strategies.holy_grail_strategy import HolyGrailStrategy
+from project_apex.strategies.holy_grail_state import HolyGrailStateManager
 
 # Risk layer
 from project_apex.risk.engine import RiskEngine
@@ -357,6 +358,24 @@ class Application:
         self.holy_grail_strategy_engine = StrategyEngine()
         self.holy_grail_strategy_engine.register(hg_strategy)
         self.holy_grail_strategy_engine.add_signal_handler(self.holy_grail_risk_engine.evaluate)
+
+        # ── Setup Holy Grail State Manager (TTL 30s) ─────────────────────────
+        hg_ttl = float(self.config.get("trading", "holy_grail_ttl_seconds") or 30.0)
+        self.holy_grail_state_manager = HolyGrailStateManager(ttl_seconds=hg_ttl)
+        saved_hg_state = self.holy_grail_state_manager.load()
+        if saved_hg_state:
+            if "risk" in saved_hg_state:
+                self.holy_grail_risk_engine.restore_state(saved_hg_state["risk"])
+            if "strategy" in saved_hg_state:
+                hg_strategy.restore_state(saved_hg_state["strategy"])
+
+        def _on_hg_state_changed() -> None:
+            if self.holy_grail_risk_engine and _hg_strategy_ref:
+                self.holy_grail_state_manager.save(
+                    strategy_state=_hg_strategy_ref[0].get_state(),
+                    risk_state=self.holy_grail_risk_engine.get_state(),
+                )
+        hg_strategy.on_state_change = _on_hg_state_changed
         
         # ── Setup Master Differs Callback ─────────────────────────────────────
         if self.differs_executor:
@@ -379,12 +398,18 @@ class Application:
                             won=won,
                             confidence=order.signal_confidence
                         )
+                    # Persist state after trade outcome
+                    self.holy_grail_state_manager.save(
+                        strategy_state=_hg_strategy_ref[0].get_state() if _hg_strategy_ref else {},
+                        risk_state=self.holy_grail_risk_engine.get_state(),
+                    )
             
             self.differs_executor.set_settlement_callback(_master_differs_settled)
 
-        # Set default active engines
-        self.risk_engine = self.standard_risk_engine
-        self.strategy_engine = self.standard_strategy_engine
+        # Activate configured trading mode
+        initial_mode = self.trading_mode
+        self.trading_mode = ""  # Force set_trading_mode to switch engines
+        self.set_trading_mode(initial_mode)
 
         # ── 7. ML Auto-Trainer ────────────────────────────────────────────────
         predictor = ml_strategy.predictor if hasattr(ml_strategy, "predictor") else XGBoostPredictor()
@@ -401,6 +426,21 @@ class Application:
         # Already created above when paper_trading=False; skip duplicate instantiation.
         if self.deriv_client is None:
             self.deriv_client = DerivClient(self.config)
+
+        if self.deriv_client is not None:
+            def _on_reconnect_stale(attempts: int, elapsed: float) -> None:
+                logger.warning(
+                    f"[Application] Reconnect exceeded threshold ({attempts} attempts, {elapsed:.1f}s). "
+                    f"Discarding Holy Grail recovery state and resetting to clean base stake."
+                )
+                if self.holy_grail_risk_engine:
+                    self.holy_grail_risk_engine.reset_recovery_state()
+                if _hg_strategy_ref:
+                    _hg_strategy_ref[0].reset_state()
+                if hasattr(self, "holy_grail_state_manager"):
+                    self.holy_grail_state_manager.clear()
+
+            self.deriv_client.on_reconnect_stale = _on_reconnect_stale
 
         # ── 9. CandleBuilder ──────────────────────────────────────────────────
         self.candle_builder = CandleBuilder(
@@ -587,6 +627,8 @@ class Application:
                 self.differs_risk_engine.on_tick()
             elif self.trading_mode == "holy_grail" and self.holy_grail_risk_engine:
                 self.holy_grail_risk_engine.on_tick()
+                if hasattr(self, "holy_grail_state_manager"):
+                    self.holy_grail_state_manager.touch()
 
     async def _on_candle_completed(self, candle: Candle) -> None:
         """Candle from the builder → update portfolio ATR, forward to autopilot."""

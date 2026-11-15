@@ -176,6 +176,44 @@ class DiffersRiskEngine:
             if self.cooldown_ticks_remaining == 0:
                 logger.info("[DiffersRiskEngine] Cooldown finished. Ready to trade.")
 
+    def get_state(self) -> dict[str, Any]:
+        """Export current recovery risk state for persistence."""
+        return {
+            "consecutive_losses": self.consecutive_losses,
+            "pattern_consecutive_losses": {
+                str(k): v for k, v in self.pattern_consecutive_losses.items()
+            },
+            "last_lost_digit": self.last_lost_digit,
+            "cooldown_ticks_remaining": self.cooldown_ticks_remaining,
+        }
+
+    def restore_state(self, state: dict[str, Any]) -> None:
+        """Restore recovery risk state from persistent storage."""
+        import ast
+        self.consecutive_losses = int(state.get("consecutive_losses", 0))
+        self.last_lost_digit = state.get("last_lost_digit")
+        self.cooldown_ticks_remaining = int(state.get("cooldown_ticks_remaining", 0))
+        raw_patterns = state.get("pattern_consecutive_losses", {})
+        self.pattern_consecutive_losses = {}
+        for k, v in raw_patterns.items():
+            try:
+                parsed_k = ast.literal_eval(k) if "(" in str(k) else k
+            except Exception:
+                parsed_k = k
+            self.pattern_consecutive_losses[parsed_k] = int(v)
+        logger.info(
+            f"[DiffersRiskEngine] Restored recovery state: consec_losses={self.consecutive_losses}, "
+            f"pattern_losses={self.pattern_consecutive_losses}"
+        )
+
+    def reset_recovery_state(self) -> None:
+        """Force reset recovery state to clean base stake."""
+        self.consecutive_losses = 0
+        self.pattern_consecutive_losses.clear()
+        self.last_lost_digit = None
+        self.cooldown_ticks_remaining = 0
+        logger.info("[DiffersRiskEngine] Recovery state reset to clean base stake.")
+
     # ── Regime detection ───────────────────────────────────────────────────
 
     def _get_regime(self) -> str:

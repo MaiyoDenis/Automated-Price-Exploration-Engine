@@ -118,3 +118,62 @@ def test_holy_grail_strategy_strict_filtered_mode():
     signal = strategy.on_tick(Tick(symbol="R_100", price=100.7, timestamp=now))
     assert signal is not None
     assert signal.barrier == 2
+
+
+def test_holy_grail_state_persistence_resume_under_ttl(tmp_path):
+    from project_apex.risk.differs_risk_engine import DiffersRiskEngine
+    from project_apex.strategies.holy_grail_state import HolyGrailStateManager
+
+    state_file = str(tmp_path / "holy_grail_state.json")
+    manager = HolyGrailStateManager(state_file=state_file, ttl_seconds=30.0)
+
+    # Simulate running bot with 1 loss on pattern (9, 3, 2)
+    risk_engine = DiffersRiskEngine(use_pattern_recovery=True)
+    risk_engine.consecutive_losses = 1
+    risk_engine.pattern_consecutive_losses[(9, 3, 2)] = 1
+    risk_engine.last_lost_digit = 2
+
+    strategy = HolyGrailStrategy()
+    strategy.active_patterns["R_100"] = {(9, 3, 2), (7, 2, 3)}
+
+    # Save state
+    manager.save(strategy.get_state(), risk_engine.get_state())
+
+    # Simulate restart 5 seconds later
+    restored_data = manager.load()
+    assert restored_data is not None
+
+    new_risk = DiffersRiskEngine(use_pattern_recovery=True)
+    new_risk.restore_state(restored_data["risk"])
+    assert new_risk.consecutive_losses == 1
+    assert new_risk.pattern_consecutive_losses[(9, 3, 2)] == 1
+    assert new_risk.last_lost_digit == 2
+
+    new_strategy = HolyGrailStrategy()
+    new_strategy.restore_state(restored_data["strategy"])
+    assert (9, 3, 2) in new_strategy.active_patterns["R_100"]
+    assert (7, 2, 3) in new_strategy.active_patterns["R_100"]
+
+
+def test_holy_grail_state_persistence_expired_over_ttl(tmp_path):
+    import json
+    from project_apex.strategies.holy_grail_state import HolyGrailStateManager
+
+    state_file = str(tmp_path / "holy_grail_state.json")
+    manager = HolyGrailStateManager(state_file=state_file, ttl_seconds=30.0)
+
+    # Write a state with timestamp 35 seconds ago
+    old_time = time.time() - 35.0
+    payload = {
+        "timestamp": old_time,
+        "strategy": {"active_patterns": {"R_100": [[9, 3, 2]]}},
+        "risk": {"consecutive_losses": 1, "pattern_consecutive_losses": {"(9, 3, 2)": 1}},
+    }
+    with open(state_file, "w") as f:
+        json.dump(payload, f)
+
+    # Loading should detect expiration, return None, and clear file
+    loaded = manager.load()
+    assert loaded is None
+    assert not (tmp_path / "holy_grail_state.json").exists()
+

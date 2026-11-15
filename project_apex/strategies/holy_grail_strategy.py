@@ -74,6 +74,7 @@ class HolyGrailStrategy(LiveStrategy):
         self.active_patterns: Dict[str, set] = {}
         self.pending_virtual_checks: Dict[str, list] = {}
         self.recent_trades: Dict[str, list] = {}
+        self.on_state_change = None
         super().__init__(name, config)
         
     def initialize(self, config: Dict[str, Any]) -> None:
@@ -118,6 +119,11 @@ class HolyGrailStrategy(LiveStrategy):
                             f"[{self.name}] ⚡ Virtual loss detected for {tick.symbol} on pattern {pat}! "
                             f"(Tick 5 digit {digit} matched barrier {tgt}). Pattern is now ACTIVE for next occurrence."
                         )
+                        if callable(self.on_state_change):
+                            try:
+                                self.on_state_change()
+                            except Exception:
+                                pass
                     else:
                         logger.debug(
                             f"[{self.name}] Virtual win for {tick.symbol} on pattern {pat} "
@@ -172,6 +178,11 @@ class HolyGrailStrategy(LiveStrategy):
                 if is_active:
                     self.active_patterns[tick.symbol].remove(pattern)
                     logger.info(f"[{self.name}] 🔄 Pattern {pattern} immediately reset to INACTIVE.")
+                    if callable(self.on_state_change):
+                        try:
+                            self.on_state_change()
+                        except Exception:
+                            pass
                 
                 # Clear the window to avoid multiple triggers on overlapping patterns
                 window.clear()
@@ -224,4 +235,33 @@ class HolyGrailStrategy(LiveStrategy):
             "win_rate": wins / len(trades),
             "avg_confidence": 0.99
         }
+
+    def get_state(self) -> Dict[str, Any]:
+        """Export active patterns state for persistence."""
+        return {
+            "active_patterns": {
+                sym: [list(p) for p in patterns]
+                for sym, patterns in self.active_patterns.items()
+            }
+        }
+
+    def restore_state(self, state: Dict[str, Any]) -> None:
+        """Restore active patterns from persistent storage."""
+        raw_active = state.get("active_patterns", {})
+        total_restored = 0
+        for sym, patterns in raw_active.items():
+            if sym not in self.active_patterns:
+                self.active_patterns[sym] = set()
+            for p in patterns:
+                self.active_patterns[sym].add(tuple(p))
+                total_restored += 1
+        logger.info(f"[{self.name}] Restored {total_restored} active patterns across {len(raw_active)} symbols.")
+
+    def reset_state(self) -> None:
+        """Reset all active patterns back to inactive."""
+        for sym in self.active_patterns:
+            self.active_patterns[sym].clear()
+        self.pending_virtual_checks.clear()
+        logger.info(f"[{self.name}] All active patterns reset to INACTIVE.")
+
  

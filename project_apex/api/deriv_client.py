@@ -6,6 +6,7 @@ Deriv Client (MarketDataProvider implementation)
 from __future__ import annotations
 
 import asyncio
+import time
 import aiohttp
 from typing import Optional
 
@@ -59,6 +60,7 @@ class DerivClient(MarketDataProvider):
 
         # Pending RPC requests: req_id → Future
         self._pending_requests: dict[int, asyncio.Future] = {}
+        self.on_reconnect_stale: Optional[Any] = None
 
         # Contract update push handlers: contract_id (str) → asyncio.Queue
         # DiffersExecutor registers a queue here; pushed proposal_open_contract
@@ -344,6 +346,7 @@ class DerivClient(MarketDataProvider):
     async def _reconnect_loop(self) -> None:
         delay = self._initial_delay
         attempts = 0
+        disconnect_start = time.time()
 
         # Cancel any active receive or heartbeat tasks while resetting
         if self._receive_task is not None and not self._receive_task.done():
@@ -395,6 +398,12 @@ class DerivClient(MarketDataProvider):
                     self._heartbeat_task.cancel()
                 await self._ws.disconnect()
                 attempts += 1
+                elapsed = time.time() - disconnect_start
+                if (attempts >= 3 or elapsed >= 30.0) and callable(self.on_reconnect_stale):
+                    try:
+                        self.on_reconnect_stale(attempts, elapsed)
+                    except Exception:
+                        pass
                 delay = min(delay * 2, self._max_delay)
 
         logger.critical("Max reconnection attempts exhausted.")
